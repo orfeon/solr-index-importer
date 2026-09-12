@@ -111,7 +111,3 @@ To import while Solr is running, register the handler in `solrconfig.xml`. Put t
 ```shell
 curl "http://localhost:8983/solr/<coreName>/import/avro?path=gs://bucket/path/to/"
 ```
-
-## Related
-
-The plugin that vectorizes query strings with an ONNX model at search time lives in the separate project `solr-onnx-query`.
