@@ -1,5 +1,6 @@
 package net.orfeon.solr.importer.convert;
 
+import org.apache.avro.Conversions;
 import org.apache.avro.LogicalType;
 import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
@@ -18,44 +19,48 @@ import java.util.Date;
 /**
  * Converts Avro records into SolrInputDocuments.
  *
- * Field naming: nested records become child documents whose fields are named "parent.child".
+ * Field naming: nested records are flattened into the document, their fields named "parent.child";
+ * arrays become multi-valued fields (an array of records yields one multi-valued field per leaf).
+ * The index is written with a plain IndexWriter, which has no notion of Solr child documents, so nesting
+ * is represented by field names only.
  * Null values (and null elements of arrays) are omitted, so a document without a value for a field
  * simply has no such field in the index.
  * When a collection of field names is given, only leaf fields whose (dotted) name is in it are emitted;
  * this is used to restrict output to fields that exist in the Solr schema. Nested records are always
- * descended into, and a child document that ends up with no fields is dropped.
+ * descended into.
  */
 public final class AvroToSolrDocumentConverter {
 
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ISO_LOCAL_TIME;
+    private static final Conversions.DecimalConversion DECIMAL = new Conversions.DecimalConversion();
 
     private AvroToSolrDocumentConverter() {
     }
 
     public static SolrInputDocument convert(final GenericRecord record) {
-        return convert(record.getSchema(), record, null, null);
+        return convert(record, null);
     }
 
     public static SolrInputDocument convert(final GenericRecord record, final Collection<String> fieldNames) {
-        return convert(record.getSchema(), record, null, fieldNames);
+        final SolrInputDocument doc = new SolrInputDocument();
+        addRecord(doc, record, null, fieldNames);
+        return doc;
     }
 
-    public static SolrInputDocument convert(
-            final Schema schema,
+    private static void addRecord(
+            final SolrInputDocument doc,
             final GenericRecord record,
             final String parentName,
             final Collection<String> fieldNames) {
 
-        final SolrInputDocument doc = new SolrInputDocument();
-        for (final Schema.Field field : schema.getFields()) {
-            final String name = parentName == null ? field.name() : parentName + "." + field.name();
-            final Object value = record.hasField(field.name()) ? record.get(field.name()) : null;
+        for (final Schema.Field field : record.getSchema().getFields()) {
+            final Object value = record.get(field.pos());
             if (value == null) {
                 continue;
             }
+            final String name = parentName == null ? field.name() : parentName + "." + field.name();
             addValue(doc, name, AvroSchemas.unnestUnion(field.schema()), value, fieldNames);
         }
-        return doc;
     }
 
     private static void addValue(
@@ -66,12 +71,7 @@ public final class AvroToSolrDocumentConverter {
             final Collection<String> fieldNames) {
 
         switch (schema.getType()) {
-            case RECORD -> {
-                final SolrInputDocument child = convert(schema, (GenericRecord) value, name, fieldNames);
-                if (!child.isEmpty() || child.hasChildDocuments()) {
-                    doc.addChildDocument(child);
-                }
-            }
+            case RECORD -> addRecord(doc, (GenericRecord) value, name, fieldNames);
             case ARRAY -> {
                 final Schema elementSchema = AvroSchemas.unnestUnion(schema.getElementType());
                 for (final Object element : (Collection<?>) value) {
@@ -94,15 +94,27 @@ public final class AvroToSolrDocumentConverter {
 
     /**
      * Converts a scalar Avro value to the Java type Solr expects for the matching field type.
-     * Logical date and timestamp types become java.util.Date (UTC); time types become ISO local time strings.
+     * Logical date and timestamp types become java.util.Date (UTC); time types become ISO local time strings;
+     * decimal (BigQuery NUMERIC/BIGNUMERIC) becomes java.math.BigDecimal, which Solr's numeric and string
+     * field types accept.
      */
     static Object toSolrValue(final Schema schema, final Object value) {
         final LogicalType logicalType = schema.getLogicalType();
         return switch (schema.getType()) {
             case BOOLEAN, FLOAT, DOUBLE -> value;
             case ENUM, STRING -> value.toString();
-            case FIXED -> ((GenericData.Fixed) value).bytes();
-            case BYTES -> toBytes((ByteBuffer) value);
+            case FIXED -> {
+                if (logicalType instanceof LogicalTypes.Decimal) {
+                    yield DECIMAL.fromFixed((GenericData.Fixed) value, schema, logicalType);
+                }
+                yield ((GenericData.Fixed) value).bytes();
+            }
+            case BYTES -> {
+                if (logicalType instanceof LogicalTypes.Decimal) {
+                    yield DECIMAL.fromBytes((ByteBuffer) value, schema, logicalType);
+                }
+                yield toBytes((ByteBuffer) value);
+            }
             case INT -> {
                 final int intValue = (Integer) value;
                 if (LogicalTypes.date().equals(logicalType)) {

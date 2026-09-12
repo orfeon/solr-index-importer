@@ -29,10 +29,11 @@ All code lives under `net.orfeon.solr.importer`.
 
 ## Mapping rules
 
-- Field names are the Avro field names. Nested records become child documents whose fields are named `parent.child`. Arrays become multi-valued fields.
+- Field names are the Avro field names. Nested records are flattened into the document with fields named `parent.child`. Arrays become multi-valued fields (an array of records yields one multi-valued field per leaf).
 - Only fields declared explicitly in the core's schema are imported. Dynamic fields are not matched.
 - Null values are omitted. A document without a value for a field has no such field in the index.
-- Avro logical `date`, `timestamp-millis` and `timestamp-micros` become Solr dates (UTC). `time-millis` and `time-micros` become ISO local time strings.
+- Avro logical `date`, `timestamp-millis` and `timestamp-micros` become Solr dates (UTC). `time-millis` and `time-micros` become ISO local time strings. `decimal` (BigQuery NUMERIC/BIGNUMERIC) becomes a `BigDecimal`, which numeric and string field types accept.
+- The schema's `uniqueKey` is honoured: a later record with the same key replaces the earlier one, as with Solr's update handler.
 - A record that violates the schema (a missing `required` field, a value the field type cannot parse) stops the import by default. Set the environment variable `IMPORT_ON_INVALID=skip` for the CLI (or pass `onInvalid=skip` to the handler) to log and skip such records instead; the skipped count is reported at the end.
 
 ## Build

@@ -8,6 +8,7 @@ import org.apache.avro.generic.GenericRecord;
 import org.apache.solr.common.SolrInputDocument;
 import org.junit.Test;
 
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Date;
@@ -36,6 +37,7 @@ public class AvroToSolrDocumentConverterTest {
             .name("tags").type().array().items().stringType().noDefault()
             .name("nullableTags").type().optional().array().items().nullable().stringType()
             .name("payload").type().optional().bytesType()
+            .name("price").type().optional().type(LogicalTypes.decimal(38, 9).addToSchema(Schema.create(Schema.Type.BYTES)))
             .name("child").type().optional().type(CHILD)
             .name("children").type().array().items(CHILD).noDefault()
             .endRecord();
@@ -59,6 +61,7 @@ public class AvroToSolrDocumentConverterTest {
         assertFalse(doc.containsKey("nullableTags"));
         assertFalse(doc.containsKey("payload"));
         assertFalse(doc.containsKey("child"));
+        assertFalse(doc.containsKey("child.name"));
         assertNull(doc.getChildDocuments());
     }
 
@@ -69,9 +72,12 @@ public class AvroToSolrDocumentConverterTest {
         record.put("count", 7L);
         record.put("ts", 1_700_000_000_000_000L);
         record.put("payload", ByteBuffer.wrap(new byte[]{1, 2, 3}));
+        // BigQuery NUMERIC 12.34 exported as decimal(38, 9): unscaled 12340000000 in two's complement.
+        record.put("price", ByteBuffer.wrap(new BigDecimal("12.340000000").unscaledValue().toByteArray()));
 
         final SolrInputDocument doc = AvroToSolrDocumentConverter.convert(record);
 
+        assertEquals(new BigDecimal("12.340000000"), doc.getFieldValue("price"));
         assertEquals("hello", doc.getFieldValue("title"));
         assertEquals(7L, doc.getFieldValue("count"));
         assertEquals(new Date(19_000L * 24 * 60 * 60 * 1000), doc.getFieldValue("date"));
@@ -92,20 +98,19 @@ public class AvroToSolrDocumentConverterTest {
     }
 
     @Test
-    public void nestedRecordsBecomeChildDocumentsWithDottedNames() {
+    public void nestedRecordsAreFlattenedWithDottedNames() {
         final GenericRecord record = base();
         record.put("child", child("c", 3));
         record.put("children", List.of(child("d", null), child("e", 5)));
 
         final SolrInputDocument doc = AvroToSolrDocumentConverter.convert(record);
 
-        final List<SolrInputDocument> children = doc.getChildDocuments();
-        assertEquals(3, children.size());
-        assertEquals("c", children.get(0).getFieldValue("child.name"));
-        assertEquals(3, children.get(0).getFieldValue("child.age"));
-        assertEquals("d", children.get(1).getFieldValue("children.name"));
-        assertFalse(children.get(1).containsKey("children.age"));
-        assertEquals(5, children.get(2).getFieldValue("children.age"));
+        // A plain IndexWriter cannot index Solr child documents, so nesting is expressed by field names only.
+        assertNull(doc.getChildDocuments());
+        assertEquals("c", doc.getFieldValue("child.name"));
+        assertEquals(3, doc.getFieldValue("child.age"));
+        assertEquals(List.of("d", "e"), List.copyOf(doc.getFieldValues("children.name")));
+        assertEquals(List.of(5), List.copyOf(doc.getFieldValues("children.age")));
     }
 
     @Test
@@ -120,9 +125,8 @@ public class AvroToSolrDocumentConverterTest {
         assertTrue(doc.containsKey("id"));
         assertTrue(doc.containsKey("count"));
         assertFalse(doc.containsKey("title"));
-        assertEquals(1, doc.getChildDocuments().size());
-        assertTrue(doc.getChildDocuments().get(0).containsKey("child.name"));
-        assertFalse(doc.getChildDocuments().get(0).containsKey("child.age"));
+        assertTrue(doc.containsKey("child.name"));
+        assertFalse(doc.containsKey("child.age"));
     }
 
     private static GenericRecord base() {

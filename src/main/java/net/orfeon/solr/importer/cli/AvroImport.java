@@ -63,9 +63,10 @@ public final class AvroImport {
 
                 final IndexImporter importer = new IndexImporter(core, writer, invalidRecordPolicy());
                 final long total = importer.importFiles(files);
-                final long generation = importer.commit();
-                writer.flush();
+                // Merge first and commit once, so the committed generation is the merged index
+                // and the intermediate segments are not fsynced twice.
                 writer.forceMerge(1);
+                final long generation = importer.commit();
                 LOG.info("committed {} documents into core {} (generation {}, skipped {} invalid records)",
                         total, coreName, generation, importer.getSkipped());
 

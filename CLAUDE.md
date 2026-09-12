@@ -45,12 +45,20 @@ Other files:
 
 ## Mapping rules (behaviour that tests pin down)
 
-- Nested records become child documents with `parent.child` field names; arrays become multi-valued fields.
+- Nested records are flattened into the parent document with `parent.child` field names; arrays become
+  multi-valued fields (an array of records yields one multi-valued field per leaf). Solr child documents are
+  not used: the index is written with a plain `IndexWriter`, and `DocumentBuilder.toDocument(doc, schema)`
+  silently drops child documents.
 - Only fields declared explicitly in the core's schema are imported (dynamic fields are not matched). The
-  filter applies to leaf fields; nested records are always descended into, and empty child documents are dropped.
+  filter applies to leaf fields; nested records are always descended into.
 - Null values are omitted, never defaulted to `""` or `0`.
 - Logical `date`, `timestamp-millis`, `timestamp-micros` become `java.util.Date` (UTC); `time-*` become ISO
-  local time strings.
+  local time strings; `decimal` on `bytes`/`fixed` (BigQuery NUMERIC/BIGNUMERIC) becomes `BigDecimal`
+  (`generateSchema` maps it to `double`).
+- The schema's `uniqueKey` is honoured (`IndexWriter.updateDocument` on the key term), so a repeated key
+  replaces the earlier document instead of producing duplicates.
+- Under the `skip` policy the Lucene `addDocument`/`updateDocument` call is inside the guarded block too,
+  because Lucene rejects some documents only there (e.g. a single term longer than 32766 bytes).
 - A record that violates the schema fails the import by default. `IMPORT_ON_INVALID=skip` (CLI env),
   `onInvalid=skip` (handler), `--build-arg ON_INVALID=skip` (Docker), `_ON_INVALID=skip` (Cloud Build) skips
   and counts such records instead.
@@ -112,6 +120,11 @@ java -cp "target/solr-index-importer-0.1-full.jar;%USERPROFILE%\.m2\repository\o
   importer jar on the classpath (parent-first, like Solr's own plugin loading). Keep that order.
 - `/var/solr` is a `VOLUME` in the base image; the index is built under `/build/solr` and `COPY`ed into
   `/var/solr/data`, because the classic builder discards `RUN` writes into a volume path.
+- The importer opens a second `IndexWriter` next to the one the loaded core already holds (the core's searcher
+  is an NRT reader over the core's own writer). This only works with `<lockType>none</lockType>` in
+  `solrconfig.xml` (as in `example/conf`); Solr's default `native` lock makes `IndexWriters.create` fail with
+  `LockObtainFailedException`. The proper fix is to write through the core's own writer / update handler,
+  which would also make `shutdownPreservingIndex` and the handler's private writer unnecessary.
 - `AvroImport` parks the index directory during `CoreContainer.shutdown()` and moves it back afterwards
   (`shutdownPreservingIndex`); the core's own update handler can otherwise write into the index on shutdown.
 - The sample data is clean (every record satisfies `example/conf/schema.xml`), so the end-to-end check runs

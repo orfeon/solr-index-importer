@@ -21,7 +21,7 @@ public final class Command {
 
         final String cmd = args[0];
         final String[] cmdArgs = Arrays.copyOfRange(args, 1, args.length);
-        System.out.println("cmd: " + cmd + " with args: " + Arrays.asList(cmdArgs));
+        // Nothing is printed to stdout here: generateSchema writes its result to stdout and is meant to be redirected.
 
         switch (cmd) {
             case "importAvro" -> AvroImport.main(cmdArgs);
