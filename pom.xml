@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>net.orfeon</groupId>
+  <artifactId>solr-index-importer</artifactId>
+  <version>0.1</version>
+  <packaging>jar</packaging>
+
+  <name>solr-index-importer</name>
+  <description>Builds Solr indexes directly from Avro files (local or Cloud Storage), as a CLI or a request handler.</description>
+  <url>http://www.orfeon.net</url>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.source>21</maven.compiler.source>
+    <maven.compiler.target>21</maven.compiler.target>
+
+    <solr.version>10.0.0</solr.version>
+    <!-- Versions solr-core 10.0.0 is built against. Its published POM is not resolvable by Maven
+         (jackson dependencies without versions), so the transitive artifacts we compile against are listed explicitly. -->
+    <lucene.version>10.3.2</lucene.version>
+    <slf4j.version>2.0.17</slf4j.version>
+    <avro.version>1.12.1</avro.version>
+    <snappy.version>1.1.10.8</snappy.version>
+    <!-- Same version avro 1.12.1 depends on and Solr 10.0.0 ships. Used for the Cloud Storage JSON API. -->
+    <jackson.version>2.20.0</jackson.version>
+  </properties>
+
+  <dependencies>
+
+    <!-- Provided by the Solr installation the jar is deployed into (or put on the CLI classpath). Not shaded. -->
+    <dependency>
+      <groupId>org.apache.solr</groupId>
+      <artifactId>solr-core</artifactId>
+      <version>${solr.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.solr</groupId>
+      <artifactId>solr-solrj</artifactId>
+      <version>${solr.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.lucene</groupId>
+      <artifactId>lucene-core</artifactId>
+      <version>${lucene.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.avro</groupId>
+      <artifactId>avro</artifactId>
+      <version>${avro.version}</version>
+    </dependency>
+    <!-- Avro codecs are optional dependencies of avro; snappy is what BigQuery exports and Dataflow write by default. -->
+    <dependency>
+      <groupId>org.xerial.snappy</groupId>
+      <artifactId>snappy-java</artifactId>
+      <version>${snappy.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+    <!-- Cloud Storage is accessed through its JSON API with the JDK HTTP client; no Google client libraries. -->
+
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.1</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <finalName>${project.artifactId}-${project.version}-full</finalName>
+              <filters>
+                <filter>
+                  <!-- Drop signature files of shaded dependencies; leaving them in causes SecurityException at load time. -->
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <transformers>
+                <!-- Merge META-INF/services (SPI registrations) across shaded dependencies. -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>net.orfeon.solr.importer.cli.Command</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
