@@ -55,6 +55,10 @@ gs://YOUR_BUCKET/solr/books/data/part-00001.avro
 - Records that violate `schema.xml` (for example a null in a `required` field) fail the build by default.
   Set the substitution `_ON_INVALID=skip` to skip and count them instead; the build log then shows
   `skipping invalid record ...` lines and a final `skipped N invalid records` summary.
+- The import uses every processor of the build machine (`_THREADS` overrides the thread count). Documents are
+  then indexed in no particular order, so with duplicated `uniqueKey` values it is not defined which duplicate
+  survives; set `_THREADS=1` when that matters. `_DEDUP=false` skips the per-document key replacement when the
+  input is known to have unique keys, which is faster.
 
 ## One-time setup
 
@@ -94,8 +98,9 @@ gcloud builds submit --project=$PROJECT_ID --config=cloudbuild.yaml \
 ```
 
 The build takes a few minutes: Maven downloads the Solr dependencies, and the import time depends on the size
-of the data. The build log shows the files that were fetched, one `indexed N documents from ...` line per Avro
-file, and the commit.
+of the data. The build log shows the files that were fetched, a progress line every 100,000 documents, one
+`indexed N documents from ...` line per Avro file, the total with the throughput, the merge and the commit.
+A larger machine type in `cloudbuild.yaml` (`E2_HIGHCPU_8` by default) speeds the import up almost linearly.
 
 To rebuild the index after the data in GCS changed, run the same command again. Every build produces a new
 image tag, so rolling back is a matter of deploying the previous tag.
@@ -137,7 +142,8 @@ mkdir -p build/conf build/data
 cp -r example/conf/* build/conf/
 cp example/data/*.avro build/data/
 mvn -q -DskipTests package
-docker build --build-arg CORE_NAME=books -t solr-books .        # add --build-arg ON_INVALID=skip to tolerate bad records
+docker build --build-arg CORE_NAME=books -t solr-books .        # add --build-arg ON_INVALID=skip to tolerate bad records,
+                                                                 # THREADS=1 for a sequential import, DEDUP=false for unique input
 docker run --rm -p 8983:8983 solr-books
 curl "http://localhost:8983/solr/books/select?q=*:*&rows=1"
 ```

@@ -8,6 +8,8 @@
 #   _IMAGE         Artifact Registry image name without tag
 #   _SOLR_VERSION  tag of the official solr image
 #   _ON_INVALID    fail or skip: what to do with records that violate the schema
+#   _THREADS       indexer threads (empty: all processors of the build machine)
+#   _DEDUP         true or false: false skips the uniqueKey replacement for input known to have unique keys
 substitutions:
   _CORE_NAME: books
   _CONF_URI: gs://YOUR_BUCKET/solr/books/conf
@@ -15,6 +17,8 @@ substitutions:
   _IMAGE: asia-northeast1-docker.pkg.dev/${PROJECT_ID}/solr/books
   _SOLR_VERSION: "10.0.0"
   _ON_INVALID: fail
+  _THREADS: ""
+  _DEDUP: "true"
 
 steps:
   # 1. Fetch the core configuration and the Avro files into the build context.
@@ -44,6 +48,8 @@ steps:
       - --build-arg=CORE_NAME=${_CORE_NAME}
       - --build-arg=SOLR_VERSION=${_SOLR_VERSION}
       - --build-arg=ON_INVALID=${_ON_INVALID}
+      - --build-arg=THREADS=${_THREADS}
+      - --build-arg=DEDUP=${_DEDUP}
       - --tag=${_IMAGE}:${BUILD_ID}
       - --tag=${_IMAGE}:latest
       - .

@@ -18,15 +18,18 @@ import java.util.Map;
 /**
  * Request handler variant of the importer: imports the Avro files under the "path" parameter
  * (local path or gs:// prefix) into the core the request was made against, writing to the index directly.
+ * Optional parameters: onInvalid (fail or skip), threads (indexer threads, default: available processors),
+ * dedup (false to add documents without replacing earlier ones with the same uniqueKey).
  */
 public class AvroImportHandler extends RequestHandlerBase {
 
-    private transient Map<String, IndexImporter> importers;
+    /** One IndexWriter per core: opening a second writer on the same index would corrupt it. */
+    private transient Map<String, SolrIndexWriter> writers;
 
     @Override
     public void init(final NamedList<?> args) {
         super.init(args);
-        this.importers = new HashMap<>();
+        this.writers = new HashMap<>();
     }
 
     @Override
@@ -40,16 +43,20 @@ public class AvroImportHandler extends RequestHandlerBase {
             throw new IllegalArgumentException("no supported input files found under: " + source);
         }
 
-        final IndexImporter.InvalidRecordPolicy policy = IndexImporter.InvalidRecordPolicy.parse(request.getParams().get("onInvalid"));
+        final IndexImporter.Options options = new IndexImporter.Options(
+                IndexImporter.InvalidRecordPolicy.parse(request.getParams().get("onInvalid")),
+                IndexImporter.Options.parseThreads(request.getParams().get("threads")),
+                IndexImporter.Options.parseDedup(request.getParams().get("dedup")));
 
-        final IndexImporter importer = importer(request.getCore(), policy);
+        final SolrIndexWriter writer = writer(request.getCore());
         final long count;
         final long skipped;
-        synchronized (importer) {
-            final long before = importer.getSkipped();
+        // The writer is shared by every request against this core, so imports into one core are serialised.
+        synchronized (writer) {
+            final IndexImporter importer = new IndexImporter(request.getCore(), writer, options);
             count = importer.importFiles(files);
             importer.commit();
-            skipped = importer.getSkipped() - before;
+            skipped = importer.getSkipped();
         }
         response.add("source", source);
         response.add("files", files.size());
@@ -67,15 +74,13 @@ public class AvroImportHandler extends RequestHandlerBase {
         return Name.ALL;
     }
 
-    private synchronized IndexImporter importer(final SolrCore core, final IndexImporter.InvalidRecordPolicy policy) throws Exception {
-        final String key = core.getName() + ":" + policy;
-        IndexImporter importer = this.importers.get(key);
-        if (importer == null) {
-            final SolrIndexWriter writer = IndexWriters.create(core, false);
-            importer = new IndexImporter(core, writer, policy);
-            this.importers.put(key, importer);
+    private synchronized SolrIndexWriter writer(final SolrCore core) throws Exception {
+        SolrIndexWriter writer = this.writers.get(core.getName());
+        if (writer == null) {
+            writer = IndexWriters.create(core, false);
+            this.writers.put(core.getName(), writer);
         }
-        return importer;
+        return writer;
     }
 
 }

@@ -36,7 +36,9 @@ Other files:
 
 - `Dockerfile`: two-stage build. Stage 1 runs `importAvro` inside the official `solr` image against
   `build/conf/` and `build/data/`; stage 2 copies only the Solr home into `/var/solr/data`.
-- `docker/solr.xml`: generic solr.xml baked into the image.
+- `docker/solr.xml`: generic solr.xml baked into the image. `docker/log4j2-import.xml`: log4j2 configuration of the
+  import step (importer at INFO, Solr at WARN, to stderr). Without it the importer's logs are dropped, because
+  Solr's jars bring log4j2 but no configuration is on the classpath.
 - `cloudbuild.yaml` + `docs/cloud-build.md`: fetch conf and Avro from GCS, build the jar, build and push the image.
 - `example/`: a fictitious, self-contained sample. `conf/` is the `books` core configuration,
   `data/books.avro` holds 1,000 generated records of made-up books, `SampleData.java` regenerates that file
@@ -59,9 +61,28 @@ Other files:
   replaces the earlier document instead of producing duplicates.
 - Under the `skip` policy the Lucene `addDocument`/`updateDocument` call is inside the guarded block too,
   because Lucene rejects some documents only there (e.g. a single term longer than 32766 bytes).
+- `IMPORT_DEDUP=false` (handler `dedup=false`, Docker `DEDUP`, Cloud Build `_DEDUP`) uses `addDocument` instead of
+  `updateDocument`; for input with unique keys the result is the same and the import is faster.
 - A record that violates the schema fails the import by default. `IMPORT_ON_INVALID=skip` (CLI env),
   `onInvalid=skip` (handler), `--build-arg ON_INVALID=skip` (Docker), `_ON_INVALID=skip` (Cloud Build) skips
   and counts such records instead.
+
+## Performance (how the import loop is built)
+
+- `IndexImporter` is a pipeline: reader threads (one per file, at most `threads`) decode Avro into batches of 256
+  records, `threads` indexer threads convert and add them to the shared `IndexWriter`. `threads` comes from
+  `IMPORT_THREADS` / handler `threads` / Docker `THREADS` / Cloud Build `_THREADS`, default
+  `availableProcessors()`. `threads=1` runs the old sequential loop (deterministic order).
+- Failures are recorded in an `AtomicReference` and every thread polls it; nothing blocks forever on the queue.
+- `AvroImport` sets `NoMergePolicy` while importing and restores the configured policy for `forceMerge(1)`.
+  Intermediate merges would only rewrite what the final merge rewrites again.
+- `example/conf/solrconfig.xml` sets `ramBufferSizeMB` 512; the Dockerfile runs the importer with
+  `-XX:MaxRAMPercentage=70 -XX:+UseParallelGC` (`IMPORT_JAVA_OPTS`).
+- Measured 2026-09-12 (500,000 sample records, 16 cores): 1 thread 25k docs/s, 16 threads 114k docs/s, plus a
+  single-threaded final merge of 1.6 s / 5.3 s. `IMPORT_DEDUP=false`: 142k docs/s, merge 3.6 s. Raising the
+  `ConcurrentMergeScheduler` thread counts did not shorten the final merge, so it is not configured.
+- `example/SampleData.java <file> <count>` generates a larger data set for measurements
+  (`build/data/books.avro 500000` was used above; `build/` is ignored).
 
 ## Build and test
 
@@ -70,7 +91,7 @@ mvn package                  # compiles, runs the tests, produces target/solr-in
 mvn -q -B clean package      # what CI-like checks should run
 ```
 
-Tests are JUnit 4 (`src/test/java`), 21 as of 2026-09-12. `GcsStorageTest` uses the JDK `HttpServer` as a
+Tests are JUnit 4 (`src/test/java`), 24 as of 2026-09-12. `GcsStorageTest` uses the JDK `HttpServer` as a
 fake token endpoint / storage API; no network access is needed. Keep it that way.
 
 Running the CLI outside the Solr image needs Solr's jars and `slf4j-api` on the classpath; `generateSchema`

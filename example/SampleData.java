@@ -21,6 +21,9 @@ import java.util.Random;
  * Run with the importer jar on the classpath (Avro is bundled in it; Avro needs slf4j-api at runtime):
  *
  *   java -cp "target/solr-index-importer-0.1-full.jar:$HOME/.m2/repository/org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar" example/SampleData.java
+ *
+ * Optional arguments: the output file (default example/data/books.avro) and the record count (default 1000).
+ * For example "example/SampleData.java build/data/books.avro 500000" produces a larger file for throughput measurements.
  */
 public class SampleData {
 
@@ -50,12 +53,13 @@ public class SampleData {
 
     public static void main(final String[] args) throws Exception {
         final File out = new File(args.length > 0 ? args[0] : "example/data/books.avro");
+        final int count = args.length > 1 ? Integer.parseInt(args[1]) : COUNT;
         out.getParentFile().mkdirs();
         final Random random = new Random(20260912L);
         try (final DataFileWriter<GenericRecord> writer = new DataFileWriter<>(new GenericDatumWriter<>(SCHEMA))) {
             writer.setCodec(CodecFactory.snappyCodec());
             writer.create(SCHEMA, out);
-            for (int i = 1; i <= COUNT; i++) {
+            for (int i = 1; i <= count; i++) {
                 final String topic = pick(random, TOPICS);
                 final GenericRecord record = new GenericData.Record(SCHEMA);
                 record.put("id", String.format("B%06d", i));
@@ -72,7 +76,7 @@ public class SampleData {
                 writer.append(record);
             }
         }
-        System.out.println("wrote " + COUNT + " records to " + out);
+        System.out.println("wrote " + count + " records to " + out);
     }
 
     static String pick(final Random random, final String[] values) {
