@@ -18,6 +18,8 @@ import java.util.Map;
 /**
  * Request handler variant of the importer: imports the Avro files under the "path" parameter
  * (local path or gs:// prefix) into the core the request was made against, writing to the index directly.
+ * Optional parameters: onInvalid (fail or skip), threads (indexer threads, default: available processors),
+ * dedup (false to add documents without replacing earlier ones with the same uniqueKey).
  */
 public class AvroImportHandler extends RequestHandlerBase {
 
@@ -40,9 +42,12 @@ public class AvroImportHandler extends RequestHandlerBase {
             throw new IllegalArgumentException("no supported input files found under: " + source);
         }
 
-        final IndexImporter.InvalidRecordPolicy policy = IndexImporter.InvalidRecordPolicy.parse(request.getParams().get("onInvalid"));
+        final IndexImporter.Options options = new IndexImporter.Options(
+                IndexImporter.InvalidRecordPolicy.parse(request.getParams().get("onInvalid")),
+                IndexImporter.Options.parseThreads(request.getParams().get("threads")),
+                IndexImporter.Options.parseDedup(request.getParams().get("dedup")));
 
-        final IndexImporter importer = importer(request.getCore(), policy);
+        final IndexImporter importer = importer(request.getCore(), options);
         final long count;
         final long skipped;
         synchronized (importer) {
@@ -67,12 +72,12 @@ public class AvroImportHandler extends RequestHandlerBase {
         return Name.ALL;
     }
 
-    private synchronized IndexImporter importer(final SolrCore core, final IndexImporter.InvalidRecordPolicy policy) throws Exception {
-        final String key = core.getName() + ":" + policy;
+    private synchronized IndexImporter importer(final SolrCore core, final IndexImporter.Options options) throws Exception {
+        final String key = core.getName() + ":" + options;
         IndexImporter importer = this.importers.get(key);
         if (importer == null) {
             final SolrIndexWriter writer = IndexWriters.create(core, false);
-            importer = new IndexImporter(core, writer, policy);
+            importer = new IndexImporter(core, writer, options);
             this.importers.put(key, importer);
         }
         return importer;

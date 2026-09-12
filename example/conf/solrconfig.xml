@@ -8,6 +8,9 @@
     <schemaFactory class="ClassicIndexSchemaFactory"/>
     <indexConfig>
         <lockType>none</lockType>
+        <!-- Larger in-memory buffer for the import: fewer flushes, fewer segments to merge at the end.
+             The importer is run with a heap of about 70% of the container memory (see Dockerfile). -->
+        <ramBufferSizeMB>512</ramBufferSizeMB>
     </indexConfig>
     <codecFactory class="solr.SchemaCodecFactory"/>
     <requestHandler class="solr.SearchHandler" name="/select">

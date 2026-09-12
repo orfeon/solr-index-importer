@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Logging of the import step in the Docker build: the importer's progress at INFO, Solr's own
+     core-loading chatter at WARN, everything to stderr so it shows up in the build log. -->
+<Configuration>
+  <Appenders>
+    <Console name="STDERR" target="SYSTEM_ERR">
+      <PatternLayout pattern="%-5p %d{HH:mm:ss.SSS} %c{1} - %m%notEmpty{ =>%ex{short}}%n"/>
+    </Console>
+  </Appenders>
+  <Loggers>
+    <Logger name="net.orfeon.solr.importer" level="INFO"/>
+    <Root level="WARN">
+      <AppenderRef ref="STDERR"/>
+    </Root>
+  </Loggers>
+</Configuration>

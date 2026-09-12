@@ -33,7 +33,7 @@ All code lives under `net.orfeon.solr.importer`.
 - Only fields declared explicitly in the core's schema are imported. Dynamic fields are not matched.
 - Null values are omitted. A document without a value for a field has no such field in the index.
 - Avro logical `date`, `timestamp-millis` and `timestamp-micros` become Solr dates (UTC). `time-millis` and `time-micros` become ISO local time strings. `decimal` (BigQuery NUMERIC/BIGNUMERIC) becomes a `BigDecimal`, which numeric and string field types accept.
-- The schema's `uniqueKey` is honoured: a later record with the same key replaces the earlier one, as with Solr's update handler.
+- The schema's `uniqueKey` is honoured: a later record with the same key replaces the earlier one, as with Solr's update handler. With more than one indexer thread (the default) the order in which documents reach the index is not defined, so which of two duplicates survives is not defined either; use `IMPORT_THREADS=1` when that matters, or `IMPORT_DEDUP=false` to skip the replacement altogether when the input is known to have unique keys (faster).
 - A record that violates the schema (a missing `required` field, a value the field type cannot parse) stops the import by default. Set the environment variable `IMPORT_ON_INVALID=skip` for the CLI (or pass `onInvalid=skip` to the handler) to log and skip such records instead; the skipped count is reported at the end.
 
 ## Build
@@ -59,6 +59,36 @@ Examples of `source`:
 - `/temp/data/` : imports every `.avro` file under the directory, recursively
 - `/temp/data/files.avro` : a single file
 - `gs://bucket/path/to/` : every `.avro` object under the prefix (authenticated with Application Default Credentials)
+
+Environment variables of the CLI:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SOLR_HOME` | `/var/solr/data/` | Solr home holding the core |
+| `IMPORT_ON_INVALID` | `fail` | `skip` logs and counts records that violate the schema instead of failing |
+| `IMPORT_THREADS` | available processors | indexer threads; `1` imports sequentially in file and record order |
+| `IMPORT_DEDUP` | `true` | `false` adds documents without replacing earlier ones with the same `uniqueKey` |
+
+The handler takes the same settings as request parameters `onInvalid`, `threads` and `dedup`.
+
+### Performance
+
+Reading, converting and indexing run as a pipeline: reader threads decode the Avro files into batches, indexer
+threads convert the batches and add them to Lucene's `IndexWriter`, which indexes concurrently. Merges are
+disabled while importing (the index is merged into one segment once at the end), and `example/conf/solrconfig.xml`
+sets `ramBufferSizeMB` to 512 so that fewer segments are flushed. The Docker build runs the importer with 70%
+of the container memory as heap (`--build-arg IMPORT_JAVA_OPTS=...` overrides the JVM options).
+
+Measured with the sample schema (`text_ja` fields) on 500,000 generated records, 16 cores, Docker on Windows:
+
+| Setting | Indexing | Final merge |
+| --- | --- | --- |
+| `IMPORT_THREADS=1` | 20.1 s (25k docs/s) | 1.6 s |
+| 16 threads | 4.4 s (114k docs/s) | 5.3 s |
+| 16 threads, `IMPORT_DEDUP=false` | 3.5 s (142k docs/s) | 3.6 s |
+
+The final merge into one segment is single-threaded and now takes a comparable share of the time; the more
+segments the threads flush, the longer it takes.
 
 ### Cloud Storage access
 
@@ -93,6 +123,9 @@ docker build --build-arg CORE_NAME=books -t solr-books .
 docker run --rm -p 8983:8983 solr-books
 curl "http://localhost:8983/solr/books/select?q=*:*&rows=1"
 ```
+
+Build args: `CORE_NAME` (required), `SOLR_VERSION`, `ON_INVALID`, `THREADS`, `DEDUP`, `IMPORT_JAVA_OPTS`
+(see the head of the `Dockerfile`). The import step logs its progress and throughput to the build output.
 
 `example/` is a fictitious sample: `conf/` defines a `books` core and `data/books.avro` holds 1,000 generated
 records of made-up books (`example/SampleData.java` regenerates it).
