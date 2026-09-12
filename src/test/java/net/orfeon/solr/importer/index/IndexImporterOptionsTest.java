@@ -33,6 +33,9 @@ public class IndexImporterOptionsTest {
         assertTrue(IndexImporter.Options.parseDedup(""));
         assertTrue(IndexImporter.Options.parseDedup("true"));
         assertFalse(IndexImporter.Options.parseDedup(" false "));
+        assertFalse(IndexImporter.Options.parseDedup("FALSE"));
+        assertThrows(IllegalArgumentException.class, () -> IndexImporter.Options.parseDedup("yes"));
+        assertThrows(IllegalArgumentException.class, () -> IndexImporter.Options.parseDedup("1"));
         assertTrue(IndexImporter.Options.DEFAULT.dedup());
         assertEquals(IndexImporter.InvalidRecordPolicy.FAIL, IndexImporter.Options.DEFAULT.invalidRecordPolicy());
     }

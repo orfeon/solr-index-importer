@@ -100,11 +100,22 @@ public class IndexImporter {
             return Integer.parseInt(value.trim());
         }
 
+        /**
+         * Parses the dedup flag. Only "true" and "false" are accepted: silently treating any other
+         * value as false would leave duplicates in the index without a warning.
+         */
         public static boolean parseDedup(final String value) {
             if (value == null || value.isBlank()) {
                 return true;
             }
-            return Boolean.parseBoolean(value.trim());
+            final String trimmed = value.trim();
+            if (trimmed.equalsIgnoreCase("true")) {
+                return true;
+            }
+            if (trimmed.equalsIgnoreCase("false")) {
+                return false;
+            }
+            throw new IllegalArgumentException("dedup must be true or false: " + value);
         }
     }
 
@@ -194,6 +205,9 @@ public class IndexImporter {
     }
 
     private long importInParallel(final List<String> files) throws IOException {
+        if (files.isEmpty()) {
+            return 0;
+        }
         final int threads = options.threads();
         final int readers = Math.min(threads, files.size());
         final BlockingQueue<Batch> queue = new ArrayBlockingQueue<>(threads * QUEUED_BATCHES_PER_THREAD);

@@ -75,8 +75,12 @@ public final class AvroImport {
                 // import and the configured policy is restored for the forced merge.
                 final MergePolicy mergePolicy = writer.getConfig().getMergePolicy();
                 writer.getConfig().setMergePolicy(NoMergePolicy.INSTANCE);
-                final long total = importer.importFiles(files);
-                writer.getConfig().setMergePolicy(mergePolicy);
+                final long total;
+                try {
+                    total = importer.importFiles(files);
+                } finally {
+                    writer.getConfig().setMergePolicy(mergePolicy);
+                }
                 // Merge first and commit once, so the committed generation is the merged index
                 // and the intermediate segments are not fsynced twice.
                 final long mergeStart = System.nanoTime();
