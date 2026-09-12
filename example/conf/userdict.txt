@@ -1,0 +1,6 @@
+# User dictionary for the Japanese tokenizer in the fictitious books sample.
+# surface,segmentation,reading,part of speech
+Solr,Solr,ソーラー,名詞
+Lucene,Lucene,ルシーン,名詞
+Avro,Avro,アブロ,名詞
+ストリーム処理,ストリーム処理,ストリームショリ,名詞

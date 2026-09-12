@@ -1,0 +1,5 @@
+# Synonyms for the fictitious books sample (Solr format).
+検索エンジン,全文検索エンジン,サーチエンジン => 検索エンジン
+DB,データベース => データベース
+ML,マシンラーニング => 機械学習
+OS => オペレーティングシステム

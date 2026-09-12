@@ -1,0 +1,59 @@
+# Cloud Build pipeline: schema.xml and Avro files in GCS -> Solr image with the index baked in.
+# See docs/cloud-build.md for setup and usage.
+#
+# Substitutions (override with --substitutions or on the trigger):
+#   _CORE_NAME     name of the Solr core
+#   _CONF_URI      gs:// directory holding the core's conf (schema.xml, solrconfig.xml, ...)
+#   _DATA_URI      gs:// directory (prefix) holding the Avro files
+#   _IMAGE         Artifact Registry image name without tag
+#   _SOLR_VERSION  tag of the official solr image
+#   _ON_INVALID    fail or skip: what to do with records that violate the schema
+substitutions:
+  _CORE_NAME: books
+  _CONF_URI: gs://YOUR_BUCKET/solr/books/conf
+  _DATA_URI: gs://YOUR_BUCKET/solr/books/data
+  _IMAGE: asia-northeast1-docker.pkg.dev/${PROJECT_ID}/solr/books
+  _SOLR_VERSION: "10.0.0"
+  _ON_INVALID: fail
+
+steps:
+  # 1. Fetch the core configuration and the Avro files into the build context.
+  - id: fetch
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        mkdir -p build/conf build/data
+        gcloud storage cp --recursive "${_CONF_URI}/*" build/conf/
+        gcloud storage cp --recursive "${_DATA_URI}/*" build/data/
+        echo "build context:"
+        find build -type f | sort
+
+  # 2. Build the importer jar from this repository.
+  - id: build-jar
+    name: maven:3.9-eclipse-temurin-21
+    entrypoint: mvn
+    args: ["-q", "-B", "-DskipTests", "package"]
+
+  # 3. Build the image. The index is built inside the Docker build (see Dockerfile).
+  - id: build-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg=CORE_NAME=${_CORE_NAME}
+      - --build-arg=SOLR_VERSION=${_SOLR_VERSION}
+      - --build-arg=ON_INVALID=${_ON_INVALID}
+      - --tag=${_IMAGE}:${BUILD_ID}
+      - --tag=${_IMAGE}:latest
+      - .
+
+# Pushed after all steps succeed.
+images:
+  - ${_IMAGE}:${BUILD_ID}
+  - ${_IMAGE}:latest
+
+options:
+  dynamicSubstitutions: true
+  machineType: E2_HIGHCPU_8
+timeout: 3600s

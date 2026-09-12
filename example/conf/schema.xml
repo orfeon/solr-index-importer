@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Schema for the fictitious "books" sample core. Field names match example/data/books.avro. -->
+<schema name="books" version="1.6">
+    <fields>
+        <field name="id" type="string" indexed="true" stored="true" required="true" />
+        <field name="title" type="string" indexed="true" stored="true" required="true" />
+        <field name="author" type="string" indexed="true" stored="true" required="true" />
+        <field name="publisher" type="string" indexed="true" stored="true" required="true" />
+        <field name="category" type="string" indexed="true" stored="true" required="true" />
+        <field name="price" type="long" indexed="true" stored="true" required="true" />
+        <field name="published" type="date" indexed="true" stored="true" required="true" />
+        <field name="tags" type="string" indexed="true" stored="true" multiValued="true" />
+        <field name="description" type="text_ja" indexed="true" stored="true" />
+        <field name="content" type="text_ja" indexed="true" stored="false" multiValued="true" />
+    </fields>
+
+    <uniqueKey>id</uniqueKey>
+
+    <copyField source="title" dest="content"/>
+    <copyField source="description" dest="content"/>
+
+    <types>
+        <fieldType name="string" class="solr.StrField" sortMissingLast="true" />
+        <fieldType name="boolean" class="solr.BoolField" sortMissingLast="true"/>
+        <fieldType name="long" class="solr.LongPointField" sortMissingLast="true"/>
+        <fieldType name="double" class="solr.DoublePointField" sortMissingLast="true"/>
+        <fieldType name="date" class="solr.DatePointField" sortMissingLast="true"/>
+        <fieldType name="text_ja" class="solr.TextField" positionIncrementGap="100">
+            <analyzer type="index">
+                <tokenizer class="solr.JapaneseTokenizerFactory" mode="search" userDictionary="userdict.txt" />
+                <filter class="solr.JapaneseBaseFormFilterFactory"/>
+                <filter class="solr.SynonymGraphFilterFactory" synonyms="synonyms.txt" ignoreCase="true" expand="true"
+                        tokenizerFactory="solr.JapaneseTokenizerFactory" userDictionary="userdict.txt" />
+                <filter class="solr.FlattenGraphFilterFactory"/>
+                <filter class="solr.CJKWidthFilterFactory"/>
+                <filter class="solr.LowerCaseFilterFactory" />
+                <filter class="solr.JapaneseKatakanaStemFilterFactory" minimumLength="2"/>
+            </analyzer>
+            <analyzer type="query">
+                <tokenizer class="solr.JapaneseTokenizerFactory" mode="search" userDictionary="userdict.txt" />
+                <filter class="solr.JapaneseBaseFormFilterFactory"/>
+                <filter class="solr.SynonymGraphFilterFactory" synonyms="synonyms.txt" ignoreCase="true" expand="true"
+                        tokenizerFactory="solr.JapaneseTokenizerFactory" userDictionary="userdict.txt" />
+                <filter class="solr.CJKWidthFilterFactory"/>
+                <filter class="solr.LowerCaseFilterFactory" />
+                <filter class="solr.JapaneseKatakanaStemFilterFactory" minimumLength="2"/>
+            </analyzer>
+        </fieldType>
+        <fieldType name="text_bi" class="solr.TextField" positionIncrementGap="100">
+            <analyzer>
+                <tokenizer class="solr.NGramTokenizerFactory" minGramSize="2" maxGramSize="2"/>
+                <filter class="solr.LowerCaseFilterFactory"/>
+            </analyzer>
+        </fieldType>
+        <fieldType name="random" class="solr.RandomSortField" />
+    </types>
+
+</schema>

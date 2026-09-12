@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<config>
+    <luceneMatchVersion>10.0.0</luceneMatchVersion>
+    <dataDir>${solr.data.dir:}</dataDir>
+    <directoryFactory class="solr.MMapDirectoryFactory" name="DirectoryFactory">
+        <bool name="preload">true</bool>
+    </directoryFactory>
+    <schemaFactory class="ClassicIndexSchemaFactory"/>
+    <indexConfig>
+        <lockType>none</lockType>
+    </indexConfig>
+    <codecFactory class="solr.SchemaCodecFactory"/>
+    <requestHandler class="solr.SearchHandler" name="/select">
+        <lst name="defaults">
+            <str name="echoParams">explicit</str>
+            <str name="rows">10</str>
+        </lst>
+    </requestHandler>
+</config>
