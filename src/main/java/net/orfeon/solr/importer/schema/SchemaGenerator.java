@@ -12,7 +12,9 @@ import java.util.Map;
  * Generates a starting-point schema.xml for a core from an Avro schema.
  *
  * Field names follow the same convention as AvroToSolrDocumentConverter: nested records produce
- * "parent.child" fields, arrays produce multiValued fields. A top-level "id" field becomes the uniqueKey.
+ * "parent.child" fields, arrays produce multiValued fields. A leaf is required only if neither it nor any
+ * record above it is nullable and it is not inside an array (a null parent or an empty array yields no value).
+ * A top-level "id" field becomes the uniqueKey.
  * The output is meant to be edited (analyzers, stored/indexed flags, vector dimensions) before use.
  */
 public final class SchemaGenerator {
@@ -36,7 +38,7 @@ public final class SchemaGenerator {
         root.setAttribute("version", "1.6");
 
         final Element fields = document.createElement("fields");
-        addFields(document, fields, null, avroSchema, false);
+        addFields(document, fields, null, avroSchema, false, false);
         root.appendChild(fields);
 
         if (avroSchema.getField(UNIQUE_KEY_FIELD) != null) {
@@ -57,11 +59,12 @@ public final class SchemaGenerator {
             final Element fields,
             final String parentName,
             final Schema recordSchema,
+            final boolean optional,
             final boolean repeated) {
 
         for (final Schema.Field field : recordSchema.getFields()) {
             final String name = parentName == null ? field.name() : parentName + "." + field.name();
-            addField(document, fields, name, field.schema(), AvroSchemas.isNullable(field.schema()), repeated);
+            addField(document, fields, name, field.schema(), optional || AvroSchemas.isNullable(field.schema()), repeated);
         }
     }
 
@@ -70,12 +73,12 @@ public final class SchemaGenerator {
             final Element fields,
             final String name,
             final Schema fieldSchema,
-            final boolean nullable,
+            final boolean optional,
             final boolean repeated) {
 
         final Schema schema = AvroSchemas.unnestUnion(fieldSchema);
         switch (schema.getType()) {
-            case RECORD -> addFields(document, fields, name, schema, repeated);
+            case RECORD -> addFields(document, fields, name, schema, optional, repeated);
             case ARRAY -> addField(document, fields, name, schema.getElementType(), true, true);
             case MAP, NULL, UNION -> {
                 // no Solr representation
@@ -87,7 +90,7 @@ public final class SchemaGenerator {
                 element.setAttribute("type", UNIQUE_KEY_FIELD.equals(name) ? "string" : fieldType(schema));
                 element.setAttribute("indexed", "true");
                 element.setAttribute("stored", "true");
-                element.setAttribute("required", nullable ? "false" : "true");
+                element.setAttribute("required", optional ? "false" : "true");
                 if (repeated) {
                     element.setAttribute("multiValued", "true");
                 }
@@ -101,7 +104,13 @@ public final class SchemaGenerator {
             case BOOLEAN -> "boolean";
             case STRING -> "textja";
             case ENUM -> "string";
-            case BYTES, FIXED -> "binary";
+            case BYTES, FIXED -> {
+                // BigQuery NUMERIC/BIGNUMERIC. "double" loses precision beyond 15-17 digits; switch to "string" if exact values matter.
+                if (schema.getLogicalType() instanceof LogicalTypes.Decimal) {
+                    yield "double";
+                }
+                yield "binary";
+            }
             case FLOAT -> "float";
             case DOUBLE -> "double";
             case INT -> {

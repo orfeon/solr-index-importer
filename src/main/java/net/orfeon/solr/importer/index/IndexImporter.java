@@ -5,9 +5,12 @@ import net.orfeon.solr.importer.source.RecordReader;
 import net.orfeon.solr.importer.source.RecordReaders;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.util.BytesRef;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.schema.IndexSchema;
+import org.apache.solr.schema.SchemaField;
 import org.apache.solr.update.DocumentBuilder;
 import org.apache.solr.update.SolrIndexWriter;
 import org.slf4j.Logger;
@@ -83,19 +86,27 @@ public class IndexImporter {
 
     public long importFile(final String file) throws IOException {
         final IndexSchema schema = core.getLatestSchema();
+        final SchemaField uniqueKey = schema.getUniqueKeyField();
         long count = 0;
         try (final RecordReader reader = RecordReaders.open(file)) {
             while (reader.hasNext()) {
                 final GenericRecord record = reader.next();
-                final Document doc;
                 try {
                     final SolrInputDocument solrDoc = AvroToSolrDocumentConverter.convert(record, fieldNames);
-                    doc = DocumentBuilder.toDocument(solrDoc, schema);
+                    final Document doc = DocumentBuilder.toDocument(solrDoc, schema);
+                    if (uniqueKey == null) {
+                        writer.addDocument(doc);
+                    } else {
+                        // Same semantics as Solr's update handler: a later document with the same key replaces the earlier one.
+                        final BytesRef id = schema.indexableUniqueKey(solrDoc.getFieldValue(uniqueKey.getName()).toString());
+                        writer.updateDocument(new Term(uniqueKey.getName(), id), doc);
+                    }
                 } catch (final RuntimeException e) {
+                    // Lucene also rejects documents at add time (e.g. a term longer than 32766 bytes),
+                    // so the writer call is inside the guarded block as well.
                     handleInvalidRecord(file, record, e);
                     continue;
                 }
-                writer.addDocument(doc);
                 count++;
             }
         }

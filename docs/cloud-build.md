@@ -154,8 +154,11 @@ curl "http://localhost:8983/solr/books/select?q=*:*&rows=1"
 - **`Unrecognized codec: zstandard`**: the Avro files use zstd compression. Add `com.github.luben:zstd-jni`
   to `pom.xml` next to `snappy-java`, or export with snappy or deflate.
 - **A field is missing from the index**: it is not declared as an explicit `<field>` in `schema.xml`.
-  Dynamic fields are not matched. Nested records are imported as child documents with `parent.child` field
-  names, which must be declared the same way.
+  Dynamic fields are not matched. Nested records are flattened into `parent.child` fields, which must be
+  declared the same way.
+- **`LockObtainFailedException: Lock held by this virtual machine`**: `solrconfig.xml` uses Solr's default
+  `native` lock. The importer opens its own `IndexWriter` next to the core's, so the core needs
+  `<indexConfig><lockType>none</lockType></indexConfig>` as in `example/conf/solrconfig.xml`.
 - **`core books does not exist`**: `_CORE_NAME` does not match the name used elsewhere; the core directory
   and `core.properties` are created from `_CORE_NAME`, so this only happens if the Dockerfile was edited.
 - **Maven step is slow**: the Solr dependencies are downloaded on every build. To cache them, add a step that

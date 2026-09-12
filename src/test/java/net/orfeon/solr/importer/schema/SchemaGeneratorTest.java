@@ -30,6 +30,8 @@ public class SchemaGeneratorTest {
             .name("ts").type().optional().type(LogicalTypes.timestampMillis().addToSchema(Schema.create(Schema.Type.LONG)))
             .name("tags").type().array().items().stringType().noDefault()
             .name("payload").type().optional().bytesType()
+            .name("price").type(LogicalTypes.decimal(38, 9).addToSchema(Schema.create(Schema.Type.BYTES))).noDefault()
+            .name("meta").type(CHILD).noDefault()
             .name("child").type().optional().type(CHILD)
             .name("children").type().array().items(CHILD).noDefault()
             .endRecord();
@@ -39,7 +41,7 @@ public class SchemaGeneratorTest {
         final Document document = SchemaGenerator.toDocument(SCHEMA, "docs");
         final Map<String, Element> fields = elementsByName(document, "field");
 
-        assertEquals(Set.of("id", "title", "flag", "date", "ts", "tags", "payload", "child.name", "children.name"), fields.keySet());
+        assertEquals(Set.of("id", "title", "flag", "date", "ts", "tags", "payload", "price", "meta.name", "child.name", "children.name"), fields.keySet());
         assertEquals("string", fields.get("id").getAttribute("type"));
         assertEquals("true", fields.get("id").getAttribute("required"));
         assertEquals("textja", fields.get("title").getAttribute("type"));
@@ -48,9 +50,16 @@ public class SchemaGeneratorTest {
         assertEquals("date", fields.get("date").getAttribute("type"));
         assertEquals("date", fields.get("ts").getAttribute("type"));
         assertEquals("binary", fields.get("payload").getAttribute("type"));
+        assertEquals("double", fields.get("price").getAttribute("type"));
         assertEquals("true", fields.get("tags").getAttribute("multiValued"));
         assertEquals("true", fields.get("children.name").getAttribute("multiValued"));
         assertEquals("", fields.get("child.name").getAttribute("multiValued"));
+
+        // A required leaf is required only when every record above it is required and none is repeated.
+        assertEquals("true", fields.get("meta.name").getAttribute("required"));
+        assertEquals("false", fields.get("child.name").getAttribute("required"));
+        assertEquals("false", fields.get("children.name").getAttribute("required"));
+        assertEquals("false", fields.get("tags").getAttribute("required"));
 
         assertEquals("docs", document.getDocumentElement().getAttribute("name"));
         assertEquals("id", document.getElementsByTagName("uniqueKey").item(0).getTextContent());
