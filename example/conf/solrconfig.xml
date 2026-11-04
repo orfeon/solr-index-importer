@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <config>
-    <luceneMatchVersion>10.0.0</luceneMatchVersion>
+    <luceneMatchVersion>10.4</luceneMatchVersion>
     <dataDir>${solr.data.dir:}</dataDir>
     <directoryFactory class="solr.MMapDirectoryFactory" name="DirectoryFactory">
         <bool name="preload">true</bool>
     </directoryFactory>
     <schemaFactory class="ClassicIndexSchemaFactory"/>
     <indexConfig>
-        <lockType>none</lockType>
         <!-- Larger in-memory buffer for the import: fewer flushes, fewer segments to merge at the end.
              The importer is run with a heap of about 70% of the container memory (see Dockerfile). -->
         <ramBufferSizeMB>512</ramBufferSizeMB>

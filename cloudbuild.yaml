@@ -10,15 +10,17 @@
 #   _ON_INVALID    fail or skip: what to do with records that violate the schema
 #   _THREADS       indexer threads (empty: all processors of the build machine)
 #   _DEDUP         true or false: false skips the uniqueKey replacement for input known to have unique keys
+#   _UPDATE_CHAIN  update processor chain of solrconfig.xml to import through (empty: the core's default chain)
 substitutions:
   _CORE_NAME: books
   _CONF_URI: gs://YOUR_BUCKET/solr/books/conf
   _DATA_URI: gs://YOUR_BUCKET/solr/books/data
   _IMAGE: asia-northeast1-docker.pkg.dev/${PROJECT_ID}/solr/books
-  _SOLR_VERSION: "10.0.0"
+  _SOLR_VERSION: "10.1.0"
   _ON_INVALID: fail
   _THREADS: ""
   _DEDUP: "true"
+  _UPDATE_CHAIN: ""
 
 steps:
   # 1. Fetch the core configuration and the Avro files into the build context.
@@ -50,6 +52,7 @@ steps:
       - --build-arg=ON_INVALID=${_ON_INVALID}
       - --build-arg=THREADS=${_THREADS}
       - --build-arg=DEDUP=${_DEDUP}
+      - --build-arg=UPDATE_CHAIN=${_UPDATE_CHAIN}
       - --tag=${_IMAGE}:${BUILD_ID}
       - --tag=${_IMAGE}:latest
       - .

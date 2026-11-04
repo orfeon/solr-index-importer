@@ -18,15 +18,16 @@
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
 
-    <solr.version>10.0.0</solr.version>
-    <!-- Versions solr-core 10.0.0 is built against. Its published POM is not resolvable by Maven
-         (jackson dependencies without versions), so the transitive artifacts we compile against are listed explicitly. -->
-    <lucene.version>10.3.2</lucene.version>
-    <slf4j.version>2.0.17</slf4j.version>
-    <avro.version>1.12.1</avro.version>
+    <solr.version>10.1.0</solr.version>
+    <!-- Versions solr-core 10.1.0 is built against. The artifacts we compile against are listed explicitly
+         instead of relying on solr-core's transitive dependencies (its 10.0.0 POM was not resolvable by Maven). -->
+    <lucene.version>10.4.0</lucene.version>
+    <slf4j.version>2.0.20</slf4j.version>
+    <avro.version>1.12.2</avro.version>
+    <!-- Same version Solr 10.1.0 ships (and avro 1.12.2 depends on); Solr's copy comes first on the classpath. -->
     <snappy.version>1.1.10.8</snappy.version>
-    <!-- Same version avro 1.12.1 depends on and Solr 10.0.0 ships. Used for the Cloud Storage JSON API. -->
-    <jackson.version>2.20.0</jackson.version>
+    <!-- Same version Solr 10.1.0 ships (avro 1.12.2 is built against 2.22.1). Used for the Cloud Storage JSON API. -->
+    <jackson.version>2.22.3</jackson.version>
   </properties>
 
   <dependencies>
@@ -79,7 +80,7 @@
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
-      <version>4.13.1</version>
+      <version>4.13.2</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -89,7 +90,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
-        <version>3.6.0</version>
+        <version>3.6.2</version>
         <executions>
           <execution>
             <phase>package</phase>

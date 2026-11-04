@@ -8,13 +8,14 @@
 #
 # Build args:
 #   CORE_NAME     name of the core (required)
-#   SOLR_VERSION  tag of the official solr image (default 10.0.0)
+#   SOLR_VERSION  tag of the official solr image (default 10.1.0)
 #   ON_INVALID    fail (default) or skip: what to do with records that violate the schema
 #   THREADS       indexer threads (default: the processors available to the build container)
 #   DEDUP         true (default) or false: false adds documents without replacing earlier ones with the same
 #                 uniqueKey; faster, for input known to have unique keys
+#   UPDATE_CHAIN  update processor chain of solrconfig.xml to import through (default: the core's default chain)
 #   IMPORT_JAVA_OPTS  JVM options of the import step (default: 70% of the container memory as heap, parallel GC)
-ARG SOLR_VERSION=10.0.0
+ARG SOLR_VERSION=10.1.0
 
 # ---- stage 1: build the index ------------------------------------------------
 FROM solr:${SOLR_VERSION} AS importer
@@ -22,6 +23,7 @@ ARG CORE_NAME
 ARG ON_INVALID=fail
 ARG THREADS=
 ARG DEDUP=true
+ARG UPDATE_CHAIN=
 ARG IMPORT_JAVA_OPTS="-XX:MaxRAMPercentage=70 -XX:+UseParallelGC"
 ARG IMPORTER_JAR=target/solr-index-importer-0.1-full.jar
 
@@ -43,7 +45,7 @@ RUN echo "name=${CORE_NAME}" > /build/solr/${CORE_NAME}/core.properties
 # (the importer jar bundles jackson and snappy, which Solr ships too). This mirrors how Solr loads plugin jars
 # from its lib directory (parent-first).
 # The wildcards cover both the webapp layout and the flat server/lib layout; missing directories are ignored.
-RUN SOLR_HOME=/build/solr IMPORT_ON_INVALID=${ON_INVALID} IMPORT_THREADS=${THREADS} IMPORT_DEDUP=${DEDUP}     java ${IMPORT_JAVA_OPTS} -Dlog4j.configurationFile=/build/lib/log4j2-import.xml -cp "/opt/solr/server/solr-webapp/webapp/WEB-INF/lib/*:/opt/solr/server/lib/*:/opt/solr/server/lib/ext/*:/build/lib/*" \
+RUN SOLR_HOME=/build/solr IMPORT_ON_INVALID=${ON_INVALID} IMPORT_THREADS=${THREADS} IMPORT_DEDUP=${DEDUP} IMPORT_UPDATE_CHAIN=${UPDATE_CHAIN}     java ${IMPORT_JAVA_OPTS} -Dlog4j.configurationFile=/build/lib/log4j2-import.xml -cp "/opt/solr/server/solr-webapp/webapp/WEB-INF/lib/*:/opt/solr/server/lib/*:/opt/solr/server/lib/ext/*:/build/lib/*" \
     net.orfeon.solr.importer.cli.Command importAvro ${CORE_NAME} /build/data
 
 # ---- stage 2: runtime image --------------------------------------------------

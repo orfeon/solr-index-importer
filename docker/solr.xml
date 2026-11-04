@@ -2,8 +2,11 @@
     <int name="maxBooleanClauses">${solr.max.booleanClauses:1024}</int>
     <str name="sharedLib">${solr.sharedLib:}</str>
     <str name="modules">${solr.modules:}</str>
-    <str name="allowPaths">${solr.allowPaths:}</str>
-    <str name="allowUrls">${solr.allowUrls:}</str>
+    <!-- Property names as in Solr 10's default solr.xml. allowUrls must list this node's own base URL
+         (e.g. http://localhost:8983/solr/) for requests with a shards parameter, which includes
+         CombinedQuerySearchHandler (hybrid search / RRF) in user-managed mode. -->
+    <str name="allowPaths">${solr.security.allow.paths:}</str>
+    <str name="allowUrls">${solr.security.allow.urls:}</str>
     <str name="hideStackTrace">${solr.hideStackTrace:false}</str>
 
     <metrics enabled="${metricsEnabled:true}">
