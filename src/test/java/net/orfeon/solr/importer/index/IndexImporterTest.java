@@ -17,6 +17,8 @@ import org.apache.solr.core.SolrCore;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrQueryRequestBase;
 import org.apache.solr.response.SolrQueryResponse;
+import org.apache.solr.update.CommitTracker;
+import org.apache.solr.update.DirectUpdateHandler2;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -33,6 +35,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -123,6 +126,30 @@ public class IndexImporterTest {
 
         assertEquals(1, importer.getSkipped());
         assertEquals(2, numDocs());
+    }
+
+    @Test
+    public void ignoreAutoCommitCoversTheDeletionToo() throws IOException {
+        final CommitTracker autoCommit = ((DirectUpdateHandler2) core.getUpdateHandler()).getCommitTracker();
+        autoCommit.cancelPendingCommit();
+        final IndexImporter importer = importer(new ModifiableSolrParams(), IndexImporter.InvalidRecordPolicy.FAIL, 1, true);
+
+        importer.deleteAll();
+        importer.importFiles(List.of(avro(item("a", "one", 1L))));
+
+        assertFalse(autoCommit.hasPending());
+    }
+
+    @Test
+    public void serverErrorFailsTheImportEvenUnderSkipPolicy() throws IOException {
+        final String file = avro(item("a", "ok", 1L), item("server-error", "ok", 2L), item("c", "ok", 3L));
+        final ModifiableSolrParams params = new ModifiableSolrParams();
+        params.set("update.chain", "server-error");
+        final IndexImporter importer = importer(params, IndexImporter.InvalidRecordPolicy.SKIP, 1, true);
+
+        final SolrException e = assertThrows(SolrException.class, () -> importer.importFiles(List.of(file)));
+        assertEquals(500, e.code());
+        assertEquals(0, importer.getSkipped());
     }
 
     @Test

@@ -4,6 +4,7 @@ import net.orfeon.solr.importer.convert.AvroToSolrDocumentConverter;
 import net.orfeon.solr.importer.source.RecordReader;
 import net.orfeon.solr.importer.source.RecordReaders;
 import org.apache.avro.generic.GenericRecord;
+import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.SolrParams;
@@ -15,8 +16,10 @@ import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.update.AddUpdateCommand;
 import org.apache.solr.update.CommitUpdateCommand;
 import org.apache.solr.update.DeleteUpdateCommand;
+import org.apache.solr.update.RollbackUpdateCommand;
 import org.apache.solr.update.UpdateCommand;
 import org.apache.solr.update.processor.UpdateRequestProcessor;
+import org.apache.solr.update.processor.UpdateRequestProcessorChain;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -141,6 +144,7 @@ public class IndexImporter {
 
     private final SolrCore core;
     private final SolrParams params;
+    private final UpdateRequestProcessorChain chain;
     private final boolean ignoreAutoCommit;
     private final Set<String> fieldNames;
     private final Options options;
@@ -158,11 +162,11 @@ public class IndexImporter {
     public IndexImporter(final SolrCore core, final SolrParams params, final Options options, final boolean ignoreAutoCommit) {
         this.core = core;
         this.params = params == null ? new ModifiableSolrParams() : params;
+        // Resolved here so that an unknown chain fails before any file is read.
+        this.chain = core.getUpdateProcessorChain(this.params);
         this.ignoreAutoCommit = ignoreAutoCommit;
         this.fieldNames = fieldNames(core.getLatestSchema());
         this.options = options;
-        // Fail before any file is read when the chain does not exist.
-        core.getUpdateProcessorChain(this.params);
     }
 
     public Options getOptions() {
@@ -375,6 +379,11 @@ public class IndexImporter {
             writer.add(AvroToSolrDocumentConverter.convert(record, fieldNames));
             return true;
         } catch (final RuntimeException e) {
+            if (isServerError(e)) {
+                // Not a fault of the record (e.g. the IndexWriter was closed by a tragic event, or the transaction
+                // log could not be written): skipping would count every following record as invalid.
+                throw e;
+            }
             // The schema is applied (DocumentBuilder) and Lucene rejects some documents (e.g. a term longer than
             // 32766 bytes) inside the update handler, so the whole processAdd call is guarded.
             handleInvalidRecord(file, record, e);
@@ -383,13 +392,18 @@ public class IndexImporter {
     }
 
     /**
+     * The update handler reports problems of a document as 4xx (BAD_REQUEST) and failures of the index itself as 5xx.
+     */
+    private static boolean isServerError(final RuntimeException e) {
+        return e instanceof SolrException solrException && solrException.code() >= 500;
+    }
+
+    /**
      * Deletes every document of the core through the update chain (the CLI replaces the whole index).
      */
     public void deleteAll() throws IOException {
         try (final ChainWriter writer = new ChainWriter()) {
-            final DeleteUpdateCommand delete = new DeleteUpdateCommand(writer.request);
-            delete.query = "*:*";
-            writer.processor.processDelete(delete);
+            writer.deleteAll();
             writer.finish();
         }
     }
@@ -402,13 +416,20 @@ public class IndexImporter {
      */
     public void commit(final boolean mergeToOneSegment, final boolean openSearcher) throws IOException {
         try (final ChainWriter writer = new ChainWriter()) {
-            final CommitUpdateCommand commit = new CommitUpdateCommand(writer.request, mergeToOneSegment);
-            if (mergeToOneSegment) {
-                commit.maxOptimizeSegments = 1;
-            }
-            commit.openSearcher = openSearcher;
-            commit.waitSearcher = openSearcher;
-            writer.processor.processCommit(commit);
+            writer.commit(mergeToOneSegment, openSearcher);
+            writer.finish();
+        }
+    }
+
+    /**
+     * Discards every change since the last commit through the update chain. The CLI's way out of a failed import:
+     * closing the core would otherwise commit the deletion and the documents added so far (Lucene's IndexWriter
+     * commits on close). Not for the handler: the core's writer also holds the uncommitted changes of every other
+     * update request.
+     */
+    public void rollback() throws IOException {
+        try (final ChainWriter writer = new ChainWriter()) {
+            writer.rollback();
             writer.finish();
         }
     }
@@ -424,27 +445,56 @@ public class IndexImporter {
 
         ChainWriter() {
             this.request = new SolrQueryRequestBase(core, params);
-            UpdateRequestProcessor created = null;
+            boolean created = false;
             try {
-                created = core.getUpdateProcessorChain(params).createProcessor(request, new SolrQueryResponse());
+                this.processor = Objects.requireNonNull(
+                        chain.createProcessor(request, new SolrQueryResponse()), "the update chain created no processor");
+                created = true;
             } finally {
-                if (created == null) {
+                if (!created) {
                     request.close();
                 }
             }
-            this.processor = created;
         }
 
         void add(final SolrInputDocument document) throws IOException {
-            final AddUpdateCommand add = new AddUpdateCommand(request);
+            final AddUpdateCommand add = flagged(new AddUpdateCommand(request));
             add.solrDoc = document;
             // overwrite: a later document with the same uniqueKey replaces the earlier one (Lucene updateDocument);
             // without it the update handler adds the document as is (addDocument).
             add.overwrite = options.dedup();
-            if (ignoreAutoCommit) {
-                add.setFlags(add.getFlags() | UpdateCommand.IGNORE_AUTOCOMMIT);
-            }
             processor.processAdd(add);
+        }
+
+        void deleteAll() throws IOException {
+            final DeleteUpdateCommand delete = flagged(new DeleteUpdateCommand(request));
+            delete.query = "*:*";
+            processor.processDelete(delete);
+        }
+
+        void commit(final boolean mergeToOneSegment, final boolean openSearcher) throws IOException {
+            final CommitUpdateCommand commit = new CommitUpdateCommand(request, mergeToOneSegment);
+            if (mergeToOneSegment) {
+                commit.maxOptimizeSegments = 1;
+            }
+            commit.openSearcher = openSearcher;
+            commit.waitSearcher = openSearcher;
+            processor.processCommit(commit);
+        }
+
+        void rollback() throws IOException {
+            processor.processRollback(new RollbackUpdateCommand(request));
+        }
+
+        /**
+         * Applies the import-wide flags. Every add and delete needs them: a delete without IGNORE_AUTOCOMMIT schedules
+         * an autoCommit / autoSoftCommit just as an add does.
+         */
+        private <T extends UpdateCommand> T flagged(final T command) {
+            if (ignoreAutoCommit) {
+                command.setFlags(command.getFlags() | UpdateCommand.IGNORE_AUTOCOMMIT);
+            }
+            return command;
         }
 
         void finish() throws IOException {

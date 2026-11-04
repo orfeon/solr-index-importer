@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 
 /**
  * Runs the CLI import against the example "books" core (example/conf, Solr's default native lock) and checks the
@@ -27,14 +28,12 @@ public class AvroImportTest {
     @Rule
     public final TemporaryFolder temp = new TemporaryFolder();
 
+    private final IndexImporter.Options options = new IndexImporter.Options(IndexImporter.InvalidRecordPolicy.FAIL, 4, true);
+
     @Test
     public void importReplacesTheIndexWithOneMergedSegment() throws IOException {
-        final Path home = temp.newFolder("solr-home").toPath();
-        Files.copy(Path.of("docker/solr.xml"), home.resolve("solr.xml"));
-        final Path core = Files.createDirectories(home.resolve("books"));
-        Files.writeString(core.resolve("core.properties"), "name=books\n");
-        copyTree(Path.of("example/conf"), core.resolve("conf"));
-        final IndexImporter.Options options = new IndexImporter.Options(IndexImporter.InvalidRecordPolicy.FAIL, 4, true);
+        final Path home = booksHome();
+        final Path core = home.resolve("books");
 
         assertEquals(SAMPLE_RECORDS, AvroImport.run(home, "books", SAMPLE, options, null));
         assertIndex(core.resolve("data/index"));
@@ -43,6 +42,30 @@ public class AvroImportTest {
         assertEquals(SAMPLE_RECORDS, AvroImport.run(home, "books", SAMPLE, options, ""));
         assertIndex(core.resolve("data/index"));
         assertFalse(Files.exists(core.resolve("data/tlog")));
+    }
+
+    @Test
+    public void failedImportLeavesTheCommittedIndexUntouched() throws IOException {
+        final Path home = booksHome();
+        assertEquals(SAMPLE_RECORDS, AvroImport.run(home, "books", SAMPLE, options, null));
+
+        // The second run deletes everything and adds some documents before the broken file fails it. Closing the
+        // core must not commit that state (Lucene's IndexWriter commits on close).
+        final Path data = temp.newFolder("data").toPath();
+        Files.copy(Path.of(SAMPLE), data.resolve("books.avro"));
+        Files.write(data.resolve("broken.avro"), new byte[] {1, 2, 3, 4});
+        assertThrows(IOException.class, () -> AvroImport.run(home, "books", data.toString(), options, null));
+
+        assertIndex(home.resolve("books/data/index"));
+    }
+
+    private Path booksHome() throws IOException {
+        final Path home = temp.newFolder("solr-home").toPath();
+        Files.copy(Path.of("docker/solr.xml"), home.resolve("solr.xml"));
+        final Path core = Files.createDirectories(home.resolve("books"));
+        Files.writeString(core.resolve("core.properties"), "name=books\n");
+        copyTree(Path.of("example/conf"), core.resolve("conf"));
+        return home;
     }
 
     private static void assertIndex(final Path indexDir) throws IOException {

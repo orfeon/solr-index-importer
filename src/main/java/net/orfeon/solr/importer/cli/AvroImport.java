@@ -26,6 +26,7 @@ import java.util.Locale;
  * Runs against SOLR_HOME (env SOLR_HOME, default /var/solr/data/) so that it can be executed
  * inside the Solr image at build time and the resulting index baked into the image.
  * The existing documents of the core are replaced, and the index is merged into one segment at the end.
+ * When the import fails, the uncommitted changes are rolled back and the committed index stays as it was.
  * Records that do not satisfy the schema stop the import unless env IMPORT_ON_INVALID=skip.
  * IMPORT_THREADS sets the number of indexer threads (default: available processors), IMPORT_DEDUP=false
  * skips the per-document uniqueKey replacement when the input is known to have unique keys, and
@@ -93,31 +94,48 @@ public final class AvroImport {
                 final IndexImporter importer = new IndexImporter(core, params, options, true);
                 LOG.info("importing with {} through update chain {}", importer.getOptions(),
                         params.get(UpdateParams.UPDATE_CHAIN, "(default)"));
-                importer.deleteAll();
-
-                // The index is merged down to one segment at the end anyway, so merging while indexing would
-                // only rewrite segments that the final merge rewrites again. Merges are disabled during the
-                // import and the configured policy is restored for the forced merge.
-                final MergePolicy mergePolicy = setMergePolicy(core, NoMergePolicy.INSTANCE);
-                final long total;
                 try {
-                    total = importer.importFiles(files);
-                } finally {
-                    setMergePolicy(core, mergePolicy);
+                    return replaceAndCommit(core, coreName, importer, files);
+                } catch (final Throwable e) {
+                    // Closing the core commits whatever its IndexWriter holds (Lucene commits on close), which would
+                    // replace the committed index with the deletion and the documents added so far.
+                    try {
+                        importer.rollback();
+                        LOG.warn("import failed; rolled back, the committed index of core {} is unchanged", coreName);
+                    } catch (final Throwable rollbackFailure) {
+                        e.addSuppressed(rollbackFailure);
+                    }
+                    throw e;
                 }
-                // An optimize commit merges first and then commits once, so the committed generation is the
-                // merged index and the intermediate segments are not fsynced twice. No searcher is opened:
-                // the container is shut down right after.
-                final long commitStart = System.nanoTime();
-                importer.commit(true, false);
-                LOG.info("merged and committed {} documents into core {} in {} s (skipped {} invalid records)",
-                        total, coreName, seconds(commitStart), importer.getSkipped());
-                LOG.info("index written to {}", core.getIndexDir());
-                return total;
             }
         } finally {
             container.shutdown();
         }
+    }
+
+    private static long replaceAndCommit(
+            final SolrCore core,
+            final String coreName,
+            final IndexImporter importer,
+            final List<String> files) throws IOException {
+
+        importer.deleteAll();
+        // The index is merged down to one segment at the end anyway, so merging while indexing would
+        // only rewrite segments that the final merge rewrites again. Merges are disabled during the
+        // import and the configured policy is restored for the forced merge. After a failure the caller
+        // rolls back, which replaces the writer with a new one that has the configured policy.
+        final MergePolicy mergePolicy = setMergePolicy(core, NoMergePolicy.INSTANCE);
+        final long total = importer.importFiles(files);
+        setMergePolicy(core, mergePolicy);
+        // An optimize commit merges first and then commits once, so the committed generation is the
+        // merged index and the intermediate segments are not fsynced twice. No searcher is opened:
+        // the container is shut down right after.
+        final long commitStart = System.nanoTime();
+        importer.commit(true, false);
+        LOG.info("merged and committed {} documents into core {} in {} s (skipped {} invalid records)",
+                total, coreName, seconds(commitStart), importer.getSkipped());
+        LOG.info("index written to {}", core.getIndexDir());
+        return total;
     }
 
     /**

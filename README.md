@@ -35,7 +35,7 @@ All code lives under `net.orfeon.solr.importer`.
 - Null values are omitted. A document without a value for a field has no such field in the index.
 - Avro logical `date`, `timestamp-millis` and `timestamp-micros` become Solr dates (UTC). `time-millis` and `time-micros` become ISO local time strings. `decimal` (BigQuery NUMERIC/BIGNUMERIC) becomes a `BigDecimal`, which numeric and string field types accept.
 - The schema's `uniqueKey` is honoured: a later record with the same key replaces the earlier one, as with Solr's update handler. With more than one indexer thread (the default) the order in which documents reach the index is not defined, so which of two duplicates survives is not defined either; use `IMPORT_THREADS=1` when that matters, or `IMPORT_DEDUP=false` to skip the replacement altogether when the input is known to have unique keys (faster).
-- A record that violates the schema (a missing `required` field, a value the field type cannot parse) stops the import by default. Set the environment variable `IMPORT_ON_INVALID=skip` for the CLI (or pass `onInvalid=skip` to the handler) to log and skip such records instead; the skipped count is reported at the end.
+- A record that violates the schema (a missing `required` field, a value the field type cannot parse) stops the import by default. Set the environment variable `IMPORT_ON_INVALID=skip` for the CLI (or pass `onInvalid=skip` to the handler) to log and skip such records instead; the skipped count is reported at the end. Errors of the index itself (Solr reports them with a 5xx code, e.g. an `IndexWriter` closed after a disk failure) stop the import under either setting.
 - Documents go through the core's update processor chain, the default one unless `IMPORT_UPDATE_CHAIN` (CLI) or `update.chain` (handler) names another. Processors configured in that chain (field mutation, defaults, ...) apply to the imported documents as they would to an update request.
 
 ## Build
@@ -51,6 +51,7 @@ This produces `target/solr-index-importer-0.1-full.jar`. Only Avro, its snappy c
 Put the jars of the Solr installation on the classpath (`/opt/solr` in the official Docker image).
 The Solr home can be set with the `SOLR_HOME` environment variable (default `/var/solr/data/`). The core must already exist there with its `core.properties` and `conf/`.
 The CLI replaces all documents of the core, merges the index into one segment and commits once at the end.
+When the import fails, its uncommitted changes are rolled back, so the committed index stays as it was.
 `autoCommit` settings are ignored during the import. A core with an `<updateLog>` works, but every document is
 then also written to the transaction log (slower, and the tlog stays next to the index), so the configuration
 used for building should not enable it; the CLI logs a warning when it does.
