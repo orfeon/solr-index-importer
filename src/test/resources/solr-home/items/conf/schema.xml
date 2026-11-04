@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Minimal schema for the importer's integration tests. -->
+<schema name="items" version="1.7">
+    <fields>
+        <field name="id" type="string" indexed="true" stored="true" required="true"/>
+        <field name="name" type="string" indexed="true" stored="true" required="true"/>
+        <field name="price" type="long" indexed="true" stored="true"/>
+        <!-- Set only by the "with-origin" update chain. -->
+        <field name="origin" type="string" indexed="true" stored="true"/>
+    </fields>
+    <uniqueKey>id</uniqueKey>
+    <types>
+        <fieldType name="string" class="solr.StrField"/>
+        <fieldType name="long" class="solr.LongPointField"/>
+    </types>
+</schema>

@@ -20,7 +20,7 @@ import java.util.Random;
  *
  * Run with the importer jar on the classpath (Avro is bundled in it; Avro needs slf4j-api at runtime):
  *
- *   java -cp "target/solr-index-importer-0.1-full.jar:$HOME/.m2/repository/org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar" example/SampleData.java
+ *   java -cp "target/solr-index-importer-0.1-full.jar:$HOME/.m2/repository/org/slf4j/slf4j-api/2.0.20/slf4j-api-2.0.20.jar" example/SampleData.java
  *
  * Optional arguments: the output file (default example/data/books.avro) and the record count (default 1000).
  * For example "example/SampleData.java build/data/books.avro 500000" produces a larger file for throughput measurements.

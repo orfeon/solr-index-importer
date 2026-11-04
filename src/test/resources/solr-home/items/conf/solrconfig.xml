@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Solr's default lock type (native) on purpose: the importer writes through the core's own IndexWriter. -->
+<config>
+    <luceneMatchVersion>10.4</luceneMatchVersion>
+    <dataDir>${solr.data.dir:}</dataDir>
+    <directoryFactory class="solr.NIOFSDirectoryFactory" name="DirectoryFactory"/>
+    <schemaFactory class="ClassicIndexSchemaFactory"/>
+    <updateRequestProcessorChain name="with-origin">
+        <processor class="solr.DefaultValueUpdateProcessorFactory">
+            <str name="fieldName">origin</str>
+            <str name="value">avro</str>
+        </processor>
+        <processor class="solr.LogUpdateProcessorFactory"/>
+        <processor class="solr.RunUpdateProcessorFactory"/>
+    </updateRequestProcessorChain>
+    <requestHandler class="solr.SearchHandler" name="/select"/>
+    <requestHandler class="net.orfeon.solr.importer.handler.AvroImportHandler" name="/import/avro"/>
+</config>

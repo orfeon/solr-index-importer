@@ -23,7 +23,8 @@ GCS                          Cloud Build                                   Artif
 3. The `build-image` step runs the two-stage `Dockerfile`:
    - Stage 1 starts from the official `solr` image, lays out a Solr home under `/build/solr` (generic
      `docker/solr.xml`, `core.properties`, the fetched `conf/`) and runs
-     `importAvro <core> /build/data`, which writes the index with Lucene's `IndexWriter`.
+     `importAvro <core> /build/data`, which loads the core and sends the documents through its update
+     processor chain, so the core's own `IndexWriter` writes the index.
    - Stage 2 starts again from the official `solr` image and copies only `/build/solr` into `/var/solr/data`.
      The Avro files and the importer jar are not part of the final image. The image's command is
      `solr-foreground --user-managed`, because Solr 10 starts in SolrCloud mode by default and the baked
@@ -46,7 +47,11 @@ gs://YOUR_BUCKET/solr/books/data/part-00001.avro
 ```
 
 - `conf/` is copied as is and becomes the core's `conf/` directory. It must contain at least `schema.xml`
-  and `solrconfig.xml`. A minimal `solrconfig.xml` is in `example/conf/`.
+  and `solrconfig.xml`. A minimal `solrconfig.xml` is in `example/conf/`. Leave `<updateLog>` out of it: the
+  image is a read-only node, and with an update log every imported document is also written to the
+  transaction log (the build logs a warning). `autoCommit` settings are ignored during the import.
+- The documents go through the core's default update processor chain, or the chain named by `_UPDATE_CHAIN`,
+  so processors configured there apply to them.
 - `data/` may contain sub-directories; every `.avro` file under it is imported. Other files are ignored.
 - Only fields declared explicitly in `schema.xml` are imported; see the mapping rules in the README.
   To get a starting point for `schema.xml`, run `generateSchema` against one of the Avro files.
@@ -143,7 +148,8 @@ cp -r example/conf/* build/conf/
 cp example/data/*.avro build/data/
 mvn -q -DskipTests package
 docker build --build-arg CORE_NAME=books -t solr-books .        # add --build-arg ON_INVALID=skip to tolerate bad records,
-                                                                 # THREADS=1 for a sequential import, DEDUP=false for unique input
+                                                                 # THREADS=1 for a sequential import, DEDUP=false for unique input,
+                                                                 # UPDATE_CHAIN=<name> for another update chain
 docker run --rm -p 8983:8983 solr-books
 curl "http://localhost:8983/solr/books/select?q=*:*&rows=1"
 ```
@@ -162,9 +168,8 @@ curl "http://localhost:8983/solr/books/select?q=*:*&rows=1"
 - **A field is missing from the index**: it is not declared as an explicit `<field>` in `schema.xml`.
   Dynamic fields are not matched. Nested records are flattened into `parent.child` fields, which must be
   declared the same way.
-- **`LockObtainFailedException: Lock held by this virtual machine`**: `solrconfig.xml` uses Solr's default
-  `native` lock. The importer opens its own `IndexWriter` next to the core's, so the core needs
-  `<indexConfig><lockType>none</lockType></indexConfig>` as in `example/conf/solrconfig.xml`.
+- **`unknown UpdateRequestProcessorChain: X`**: `_UPDATE_CHAIN` names a chain that `solrconfig.xml` does not
+  define.
 - **`core books does not exist`**: `_CORE_NAME` does not match the name used elsewhere; the core directory
   and `core.properties` are created from `_CORE_NAME`, so this only happens if the Dockerfile was edited.
 - **Maven step is slow**: the Solr dependencies are downloaded on every build. To cache them, add a step that

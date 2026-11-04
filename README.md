@@ -1,7 +1,8 @@
 # solr-index-importer
 
 Builds a Solr search index directly from Avro files.
-Instead of going through Solr's HTTP update path, it writes to the core's index directory with Lucene's `IndexWriter`.
+It runs inside the Solr installation and sends the documents through the core's update processor chain in-process,
+without HTTP, so the core's own update handler and `IndexWriter` write the index.
 The intended use is to build the index while building a Docker image, then run the image as a read-only search node (for example on Cloud Run).
 
 ## Contract
@@ -22,7 +23,7 @@ All code lives under `net.orfeon.solr.importer`.
 | `cli` | `Command` dispatches to `AvroImport` (`importAvro`) and `GenerateSchema` (`generateSchema`) |
 | `handler` | `AvroImportHandler`, the RequestHandler variant. Imports the files named by the `path` parameter |
 | `source` | Input abstraction. `Sources` lists files and opens streams for local paths and GCS; `RecordReaders` picks a `RecordReader` by file extension. New formats such as Parquet are added here |
-| `index` | `IndexImporter`, the import loop shared by CLI and handler; `IndexWriters` opens the writer on a core |
+| `index` | `IndexImporter`, the import loop shared by CLI and handler: converts records and sends them through the core's update processor chain |
 | `convert` | `AvroToSolrDocumentConverter`: Avro record to `SolrInputDocument` |
 | `schema` | `SchemaGenerator`: a starting-point `schema.xml` derived from an Avro schema |
 | `storage` | `GcsStorage`, a minimal Cloud Storage client over the JSON API with the JDK HTTP client; `GoogleCredentials` resolves credentials like Application Default Credentials |
@@ -35,6 +36,7 @@ All code lives under `net.orfeon.solr.importer`.
 - Avro logical `date`, `timestamp-millis` and `timestamp-micros` become Solr dates (UTC). `time-millis` and `time-micros` become ISO local time strings. `decimal` (BigQuery NUMERIC/BIGNUMERIC) becomes a `BigDecimal`, which numeric and string field types accept.
 - The schema's `uniqueKey` is honoured: a later record with the same key replaces the earlier one, as with Solr's update handler. With more than one indexer thread (the default) the order in which documents reach the index is not defined, so which of two duplicates survives is not defined either; use `IMPORT_THREADS=1` when that matters, or `IMPORT_DEDUP=false` to skip the replacement altogether when the input is known to have unique keys (faster).
 - A record that violates the schema (a missing `required` field, a value the field type cannot parse) stops the import by default. Set the environment variable `IMPORT_ON_INVALID=skip` for the CLI (or pass `onInvalid=skip` to the handler) to log and skip such records instead; the skipped count is reported at the end.
+- Documents go through the core's update processor chain, the default one unless `IMPORT_UPDATE_CHAIN` (CLI) or `update.chain` (handler) names another. Processors configured in that chain (field mutation, defaults, ...) apply to the imported documents as they would to an update request.
 
 ## Build
 
@@ -48,6 +50,10 @@ This produces `target/solr-index-importer-0.1-full.jar`. Only Avro, its snappy c
 
 Put the jars of the Solr installation on the classpath (`/opt/solr` in the official Docker image).
 The Solr home can be set with the `SOLR_HOME` environment variable (default `/var/solr/data/`). The core must already exist there with its `core.properties` and `conf/`.
+The CLI replaces all documents of the core, merges the index into one segment and commits once at the end.
+`autoCommit` settings are ignored during the import. A core with an `<updateLog>` works, but every document is
+then also written to the transaction log (slower, and the tlog stays next to the index), so the configuration
+used for building should not enable it; the CLI logs a warning when it does.
 
 ```shell
 java -cp "/opt/solr/lib/solr-index-importer-0.1-full.jar:/opt/solr/server/lib/*:/opt/solr/server/solr-webapp/webapp/WEB-INF/lib/*" \
@@ -68,14 +74,16 @@ Environment variables of the CLI:
 | `IMPORT_ON_INVALID` | `fail` | `skip` logs and counts records that violate the schema instead of failing |
 | `IMPORT_THREADS` | available processors | indexer threads; `1` imports sequentially in file and record order |
 | `IMPORT_DEDUP` | `true` | `false` adds documents without replacing earlier ones with the same `uniqueKey` |
+| `IMPORT_UPDATE_CHAIN` | the core's default chain | name of the update processor chain to import through |
 
-The handler takes the same settings as request parameters `onInvalid`, `threads` and `dedup`.
+The handler takes the same settings as request parameters `onInvalid`, `threads`, `dedup` and `update.chain`.
 
 ### Performance
 
 Reading, converting and indexing run as a pipeline: reader threads decode the Avro files into batches, indexer
-threads convert the batches and add them to Lucene's `IndexWriter`, which indexes concurrently. Merges are
-disabled while importing (the index is merged into one segment once at the end), and `example/conf/solrconfig.xml`
+threads convert the batches and add them through the update chain (one processor instance per thread) to the
+core's `IndexWriter`, which indexes concurrently. Merges are disabled while importing (the index is merged into
+one segment once at the end), and `example/conf/solrconfig.xml`
 sets `ramBufferSizeMB` to 512 so that fewer segments are flushed. The Docker build runs the importer with 70%
 of the container memory as heap (`--build-arg IMPORT_JAVA_OPTS=...` overrides the JVM options).
 
@@ -89,6 +97,10 @@ Measured with the sample schema (`text_ja` fields) on 500,000 generated records,
 
 The final merge into one segment is single-threaded and now takes a comparable share of the time; the more
 segments the threads flush, the longer it takes.
+
+These numbers were taken when the importer still wrote with a separate `IndexWriter`. Going through the update
+chain costs about 7 to 8% of the indexing throughput with 16 threads and about 1% of the whole run (measured
+locally against the old path, see `CLAUDE.md`).
 
 ### Cloud Storage access
 
@@ -124,7 +136,7 @@ docker run --rm -p 8983:8983 solr-books
 curl "http://localhost:8983/solr/books/select?q=*:*&rows=1"
 ```
 
-Build args: `CORE_NAME` (required), `SOLR_VERSION`, `ON_INVALID`, `THREADS`, `DEDUP`, `IMPORT_JAVA_OPTS`
+Build args: `CORE_NAME` (required), `SOLR_VERSION`, `ON_INVALID`, `THREADS`, `DEDUP`, `UPDATE_CHAIN`, `IMPORT_JAVA_OPTS`
 (see the head of the `Dockerfile`). The import step logs its progress and throughput to the build output.
 
 `example/` is a fictitious sample: `conf/` defines a `books` core and `data/books.avro` holds 1,000 generated
@@ -144,3 +156,7 @@ To import while Solr is running, register the handler in `solrconfig.xml`. Put t
 ```shell
 curl "http://localhost:8983/solr/<coreName>/import/avro?path=gs://bucket/path/to/"
 ```
+
+The handler adds the documents to the existing ones through the core's update chain and commits with a new
+searcher, so they are searchable when the request returns. The core's `autoCommit` settings apply while it runs,
+as for any update request.

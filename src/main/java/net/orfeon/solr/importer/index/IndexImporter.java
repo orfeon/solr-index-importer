@@ -4,18 +4,23 @@ import net.orfeon.solr.importer.convert.AvroToSolrDocumentConverter;
 import net.orfeon.solr.importer.source.RecordReader;
 import net.orfeon.solr.importer.source.RecordReaders;
 import org.apache.avro.generic.GenericRecord;
-import org.apache.lucene.document.Document;
-import org.apache.lucene.index.Term;
-import org.apache.lucene.util.BytesRef;
 import org.apache.solr.common.SolrInputDocument;
+import org.apache.solr.common.params.ModifiableSolrParams;
+import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.core.SolrCore;
+import org.apache.solr.request.SolrQueryRequest;
+import org.apache.solr.request.SolrQueryRequestBase;
+import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.schema.IndexSchema;
-import org.apache.solr.schema.SchemaField;
-import org.apache.solr.update.DocumentBuilder;
-import org.apache.solr.update.SolrIndexWriter;
+import org.apache.solr.update.AddUpdateCommand;
+import org.apache.solr.update.CommitUpdateCommand;
+import org.apache.solr.update.DeleteUpdateCommand;
+import org.apache.solr.update.UpdateCommand;
+import org.apache.solr.update.processor.UpdateRequestProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,13 +46,15 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * The import loop shared by the CLI and the request handler:
  * read records from each input file, convert them to Solr documents restricted to the fields
- * declared in the core's schema, and add them to the index writer.
+ * declared in the core's schema, and send them through the core's update processor chain, so that the
+ * core's own update handler and IndexWriter write them (the path of an update request, minus HTTP).
+ * The chain is the core's default one unless the params name another with "update.chain".
  *
  * With more than one thread the import is a pipeline: reader threads decode the Avro files into batches of
- * records, indexer threads convert the batches and add them to the writer (Lucene's IndexWriter indexes
- * concurrently, one segment buffer per thread). The order in which documents reach the writer is then
- * not defined, so with duplicated unique keys it is not defined either which of the duplicates survives;
- * use a single thread when that matters.
+ * records, indexer threads convert the batches and add them, each through its own processor instance (Lucene's
+ * IndexWriter indexes concurrently, one segment buffer per thread). The order in which documents reach the
+ * index is then not defined, so with duplicated unique keys it is not defined either which of the duplicates
+ * survives; use a single thread when that matters.
  */
 public class IndexImporter {
 
@@ -133,25 +140,29 @@ public class IndexImporter {
     }
 
     private final SolrCore core;
-    private final SolrIndexWriter writer;
+    private final SolrParams params;
+    private final boolean ignoreAutoCommit;
     private final Set<String> fieldNames;
     private final Options options;
 
     private final AtomicLong skipped = new AtomicLong();
 
-    public IndexImporter(final SolrCore core, final SolrIndexWriter writer) {
-        this(core, writer, Options.DEFAULT);
-    }
-
-    public IndexImporter(final SolrCore core, final SolrIndexWriter writer, final InvalidRecordPolicy invalidRecordPolicy) {
-        this(core, writer, new Options(invalidRecordPolicy, Options.defaultThreads(), true));
-    }
-
-    public IndexImporter(final SolrCore core, final SolrIndexWriter writer, final Options options) {
+    /**
+     * @param core             the core to import into
+     * @param params           request parameters for the update chain; "update.chain" selects a chain other than the
+     *                         core's default one
+     * @param options          import settings
+     * @param ignoreAutoCommit true to keep the core's autoCommit / autoSoftCommit from committing while importing
+     *                         (the CLI commits once at the end); false to let them work as for any update request
+     */
+    public IndexImporter(final SolrCore core, final SolrParams params, final Options options, final boolean ignoreAutoCommit) {
         this.core = core;
-        this.writer = writer;
+        this.params = params == null ? new ModifiableSolrParams() : params;
+        this.ignoreAutoCommit = ignoreAutoCommit;
         this.fieldNames = fieldNames(core.getLatestSchema());
         this.options = options;
+        // Fail before any file is read when the chain does not exist.
+        core.getUpdateProcessorChain(this.params);
     }
 
     public Options getOptions() {
@@ -177,11 +188,14 @@ public class IndexImporter {
 
     private long importSequentially(final List<String> files) throws IOException {
         long total = 0;
-        for (final String file : files) {
-            final long before = skipped.get();
-            final long count = importFile(file);
-            LOG.info("indexed {} documents from {} (skipped {} invalid records)", count, file, skipped.get() - before);
-            total += count;
+        try (final ChainWriter writer = new ChainWriter()) {
+            for (final String file : files) {
+                final long before = skipped.get();
+                final long count = importFile(writer, file);
+                LOG.info("indexed {} documents from {} (skipped {} invalid records)", count, file, skipped.get() - before);
+                total += count;
+            }
+            writer.finish();
         }
         return total;
     }
@@ -189,11 +203,11 @@ public class IndexImporter {
     /**
      * Imports one file on the calling thread and returns the number of documents added.
      */
-    public long importFile(final String file) throws IOException {
+    private long importFile(final ChainWriter writer, final String file) throws IOException {
         long count = 0;
         try (final RecordReader reader = RecordReaders.open(file)) {
             while (reader.hasNext()) {
-                if (indexRecord(file, reader.next())) {
+                if (indexRecord(writer, file, reader.next())) {
                     count++;
                     if (count % PROGRESS_EVERY == 0) {
                         LOG.info("indexed {} documents from {} so far", count, file);
@@ -287,7 +301,8 @@ public class IndexImporter {
             final long start) {
 
         long count = 0;
-        try {
+        // Processor instances are not thread safe, so every indexer thread has its own.
+        try (final ChainWriter writer = new ChainWriter()) {
             while (failure.get() == null) {
                 final Batch batch = queue.poll(QUEUE_WAIT_MILLIS, TimeUnit.MILLISECONDS);
                 if (batch == null) {
@@ -298,13 +313,16 @@ public class IndexImporter {
                 }
                 long added = 0;
                 for (final GenericRecord record : batch.records()) {
-                    if (indexRecord(batch.file(), record)) {
+                    if (indexRecord(writer, batch.file(), record)) {
                         added++;
                     }
                 }
                 count += added;
                 perFile.computeIfAbsent(batch.file(), k -> new AtomicLong()).addAndGet(added);
                 logProgress(progress, added, start);
+            }
+            if (failure.get() == null) {
+                writer.finish();
             }
         } catch (final Throwable e) {
             failure.compareAndSet(null, e);
@@ -352,30 +370,95 @@ public class IndexImporter {
     /**
      * Converts and indexes one record. Returns false when the record was skipped under the SKIP policy.
      */
-    private boolean indexRecord(final String file, final GenericRecord record) throws IOException {
-        final IndexSchema schema = core.getLatestSchema();
+    private boolean indexRecord(final ChainWriter writer, final String file, final GenericRecord record) throws IOException {
         try {
-            final SolrInputDocument solrDoc = AvroToSolrDocumentConverter.convert(record, fieldNames);
-            final Document doc = DocumentBuilder.toDocument(solrDoc, schema);
-            final SchemaField uniqueKey = schema.getUniqueKeyField();
-            if (uniqueKey == null || !options.dedup()) {
-                writer.addDocument(doc);
-            } else {
-                // Same semantics as Solr's update handler: a later document with the same key replaces the earlier one.
-                final BytesRef id = schema.indexableUniqueKey(solrDoc.getFieldValue(uniqueKey.getName()).toString());
-                writer.updateDocument(new Term(uniqueKey.getName(), id), doc);
-            }
+            writer.add(AvroToSolrDocumentConverter.convert(record, fieldNames));
             return true;
         } catch (final RuntimeException e) {
-            // Lucene also rejects documents at add time (e.g. a term longer than 32766 bytes),
-            // so the writer call is inside the guarded block as well.
+            // The schema is applied (DocumentBuilder) and Lucene rejects some documents (e.g. a term longer than
+            // 32766 bytes) inside the update handler, so the whole processAdd call is guarded.
             handleInvalidRecord(file, record, e);
             return false;
         }
     }
 
-    public long commit() throws IOException {
-        return writer.commit();
+    /**
+     * Deletes every document of the core through the update chain (the CLI replaces the whole index).
+     */
+    public void deleteAll() throws IOException {
+        try (final ChainWriter writer = new ChainWriter()) {
+            final DeleteUpdateCommand delete = new DeleteUpdateCommand(writer.request);
+            delete.query = "*:*";
+            writer.processor.processDelete(delete);
+            writer.finish();
+        }
+    }
+
+    /**
+     * Commits through the update chain.
+     *
+     * @param mergeToOneSegment true to merge the index down to one segment before the commit (an optimize)
+     * @param openSearcher      true to open a new searcher so that the imported documents become visible
+     */
+    public void commit(final boolean mergeToOneSegment, final boolean openSearcher) throws IOException {
+        try (final ChainWriter writer = new ChainWriter()) {
+            final CommitUpdateCommand commit = new CommitUpdateCommand(writer.request, mergeToOneSegment);
+            if (mergeToOneSegment) {
+                commit.maxOptimizeSegments = 1;
+            }
+            commit.openSearcher = openSearcher;
+            commit.waitSearcher = openSearcher;
+            writer.processor.processCommit(commit);
+            writer.finish();
+        }
+    }
+
+    /**
+     * One processor instance of the update chain together with the request it belongs to; used by one thread.
+     * finish() is called after successful processing only, close() always (as Solr's update handlers do).
+     */
+    private final class ChainWriter implements Closeable {
+
+        private final SolrQueryRequest request;
+        private final UpdateRequestProcessor processor;
+
+        ChainWriter() {
+            this.request = new SolrQueryRequestBase(core, params);
+            UpdateRequestProcessor created = null;
+            try {
+                created = core.getUpdateProcessorChain(params).createProcessor(request, new SolrQueryResponse());
+            } finally {
+                if (created == null) {
+                    request.close();
+                }
+            }
+            this.processor = created;
+        }
+
+        void add(final SolrInputDocument document) throws IOException {
+            final AddUpdateCommand add = new AddUpdateCommand(request);
+            add.solrDoc = document;
+            // overwrite: a later document with the same uniqueKey replaces the earlier one (Lucene updateDocument);
+            // without it the update handler adds the document as is (addDocument).
+            add.overwrite = options.dedup();
+            if (ignoreAutoCommit) {
+                add.setFlags(add.getFlags() | UpdateCommand.IGNORE_AUTOCOMMIT);
+            }
+            processor.processAdd(add);
+        }
+
+        void finish() throws IOException {
+            processor.finish();
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                processor.close();
+            } finally {
+                request.close();
+            }
+        }
     }
 
     /**
