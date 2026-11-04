@@ -71,9 +71,11 @@ Other files:
 - The schema's `uniqueKey` is honoured (`AddUpdateCommand.overwrite`, i.e. the update handler's
   `updateDocument` on the key), so a repeated key replaces the earlier document instead of producing duplicates.
 - Under the `skip` policy the whole `processAdd` call is guarded, because the schema is applied and Lucene rejects
-  some documents (e.g. a single term longer than 32766 bytes) only inside the update handler. A `SolrException`
-  with a 5xx code is not a fault of the record (the update handler reports a tragically closed `IndexWriter` or a
-  failed tlog write that way) and fails the import under either policy.
+  some documents (e.g. a single term longer than 32766 bytes) only inside the update handler. A failure of the
+  index itself fails the import under either policy; it is recognised by the cause chain (`AlreadyClosedException`:
+  a tragically closed `IndexWriter`; `IOException`: e.g. a failed tlog write), not by the error code. A 5xx alone
+  says nothing: `DenseVectorField` reports a wrong vector dimension, a fault of the record, as `SERVER_ERROR`, and
+  `DocumentBuilder` keeps that code (pinned by `IndexImporterTest`).
 - `IMPORT_DEDUP=false` (handler `dedup=false`, Docker `DEDUP`, Cloud Build `_DEDUP`) sets `overwrite=false`, so the
   update handler uses `addDocuments` instead of `updateDocument`; for input with unique keys the result is the same
   and the import is faster.
@@ -85,6 +87,10 @@ Other files:
   index (pinned by `AvroImportTest`). The handler adds to the existing documents, lets `autoCommit` work as for
   any update request and commits with `openSearcher=true`, so the documents are searchable when the request
   returns. It never rolls back: the core's writer also holds the uncommitted changes of other update requests.
+  A handler import is therefore not atomic: Solr's commits are core-wide, so an `autoCommit`, another client's
+  commit or another handler import's commit publishes a running import's documents, and those of a failed one.
+  Serialising handler imports per core would not change that, so they are not serialised. Atomic replacement is the
+  CLI's job (bake the index into an image), or build into a separate core and swap it in.
 - A record that violates the schema fails the import by default. `IMPORT_ON_INVALID=skip` (CLI env),
   `onInvalid=skip` (handler), `--build-arg ON_INVALID=skip` (Docker), `_ON_INVALID=skip` (Cloud Build) skips
   and counts such records instead.
@@ -141,12 +147,12 @@ mvn package                  # compiles, runs the tests, produces target/solr-in
 mvn -q -B clean package      # what CI-like checks should run
 ```
 
-Tests are JUnit 4 (`src/test/java`), 36 as of 2026-11-05. `GcsStorageTest` uses the JDK `HttpServer` as a
+Tests are JUnit 4 (`src/test/java`), 38 as of 2026-11-05. `GcsStorageTest` uses the JDK `HttpServer` as a
 fake token endpoint / storage API; no network access is needed. Keep it that way.
 `IndexImporterTest` and `AvroImportTest` load real cores in-process (`provided` Solr jars are on the test
-classpath): the `items` core in `src/test/resources/solr-home` (extra `with-origin` and `server-error` update
-chains, an `autoCommit` that never fires within a test run, the import handler at `/import/avro`) and the
-`example/conf` `books` core with `example/data/books.avro`. Both use Solr's
+classpath): the `items` core in `src/test/resources/solr-home` (a 2-dimensional `vector` field, extra
+`with-origin` and `server-error` update chains, an `autoCommit` that never fires within a test run, the import
+handler at `/import/avro`) and the `example/conf` `books` core with `example/data/books.avro`. Both use Solr's
 default `native` lock; keep it that way so that a regression to a second writer shows up.
 
 Running the CLI outside the Solr image needs Solr's jars and `slf4j-api` on the classpath; `generateSchema`

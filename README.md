@@ -35,7 +35,7 @@ All code lives under `net.orfeon.solr.importer`.
 - Null values are omitted. A document without a value for a field has no such field in the index.
 - Avro logical `date`, `timestamp-millis` and `timestamp-micros` become Solr dates (UTC). `time-millis` and `time-micros` become ISO local time strings. `decimal` (BigQuery NUMERIC/BIGNUMERIC) becomes a `BigDecimal`, which numeric and string field types accept.
 - The schema's `uniqueKey` is honoured: a later record with the same key replaces the earlier one, as with Solr's update handler. With more than one indexer thread (the default) the order in which documents reach the index is not defined, so which of two duplicates survives is not defined either; use `IMPORT_THREADS=1` when that matters, or `IMPORT_DEDUP=false` to skip the replacement altogether when the input is known to have unique keys (faster).
-- A record that violates the schema (a missing `required` field, a value the field type cannot parse) stops the import by default. Set the environment variable `IMPORT_ON_INVALID=skip` for the CLI (or pass `onInvalid=skip` to the handler) to log and skip such records instead; the skipped count is reported at the end. Errors of the index itself (Solr reports them with a 5xx code, e.g. an `IndexWriter` closed after a disk failure) stop the import under either setting.
+- A record that violates the schema (a missing `required` field, a value the field type cannot parse) stops the import by default. Set the environment variable `IMPORT_ON_INVALID=skip` for the CLI (or pass `onInvalid=skip` to the handler) to log and skip such records instead; the skipped count is reported at the end. Failures of the index itself (an `IndexWriter` closed after a disk failure, an I/O error writing the transaction log) stop the import under either setting; a record that a field type rejects is skipped even when Solr reports it with a 5xx code (as `DenseVectorField` does for a wrong vector dimension).
 - Documents go through the core's update processor chain, the default one unless `IMPORT_UPDATE_CHAIN` (CLI) or `update.chain` (handler) names another. Processors configured in that chain (field mutation, defaults, ...) apply to the imported documents as they would to an update request.
 
 ## Build
@@ -161,3 +161,8 @@ curl "http://localhost:8983/solr/<coreName>/import/avro?path=gs://bucket/path/to
 The handler adds the documents to the existing ones through the core's update chain and commits with a new
 searcher, so they are searchable when the request returns. The core's `autoCommit` settings apply while it runs,
 as for any update request.
+
+A handler import is not atomic. Solr's commits apply to the whole core, so an `autoCommit`, another client's commit
+or another import's commit makes the documents of a running import visible, and a failed import is not rolled back
+(the core's writer may hold other clients' uncommitted changes too). To replace an index atomically, build it with
+the CLI into an image, or import into a separate core and swap it in.

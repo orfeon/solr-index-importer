@@ -1,5 +1,6 @@
 package net.orfeon.solr.importer.index;
 
+import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.response.SolrQueryResponse;
@@ -10,8 +11,9 @@ import org.apache.solr.update.processor.UpdateRequestProcessorFactory;
 import java.io.IOException;
 
 /**
- * Test processor of the "server-error" chain: fails the document with id "server-error" with a 500, the way the
- * update handler reports an IndexWriter closed by a tragic event.
+ * Test processor of the "server-error" chain: fails the document with id "server-error" the way
+ * DirectUpdateHandler2.addDoc reports an IndexWriter closed by a tragic event (a 500 wrapping Lucene's
+ * AlreadyClosedException).
  */
 public class ServerErrorUpdateProcessorFactory extends UpdateRequestProcessorFactory {
 
@@ -22,7 +24,9 @@ public class ServerErrorUpdateProcessorFactory extends UpdateRequestProcessorFac
             @Override
             public void processAdd(final AddUpdateCommand command) throws IOException {
                 if ("server-error".equals(command.getSolrInputDocument().getFieldValue("id"))) {
-                    throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "simulated index failure");
+                    throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,
+                            "Server error writing document id server-error to the index.",
+                            new AlreadyClosedException("this IndexWriter is closed"));
                 }
                 super.processAdd(command);
             }

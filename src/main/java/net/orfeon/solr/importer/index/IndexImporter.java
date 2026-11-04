@@ -4,7 +4,7 @@ import net.orfeon.solr.importer.convert.AvroToSolrDocumentConverter;
 import net.orfeon.solr.importer.source.RecordReader;
 import net.orfeon.solr.importer.source.RecordReaders;
 import org.apache.avro.generic.GenericRecord;
-import org.apache.solr.common.SolrException;
+import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.SolrParams;
@@ -379,7 +379,7 @@ public class IndexImporter {
             writer.add(AvroToSolrDocumentConverter.convert(record, fieldNames));
             return true;
         } catch (final RuntimeException e) {
-            if (isServerError(e)) {
+            if (isIndexFailure(e)) {
                 // Not a fault of the record (e.g. the IndexWriter was closed by a tragic event, or the transaction
                 // log could not be written): skipping would count every following record as invalid.
                 throw e;
@@ -392,10 +392,21 @@ public class IndexImporter {
     }
 
     /**
-     * The update handler reports problems of a document as 4xx (BAD_REQUEST) and failures of the index itself as 5xx.
+     * Whether the exception reports a failure of the index rather than of the document. Decided by the cause, not by
+     * the error code: the update handler wraps a closed IndexWriter (AlreadyClosedException) and failed transaction
+     * log writes (IOException) in a 500, but field types report bad values with a 500 too (DenseVectorField does
+     * for a wrong dimension, and DocumentBuilder keeps the code), and those are faults of the record.
      */
-    private static boolean isServerError(final RuntimeException e) {
-        return e instanceof SolrException solrException && solrException.code() >= 500;
+    static boolean isIndexFailure(final Throwable e) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof AlreadyClosedException || cause instanceof IOException) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**

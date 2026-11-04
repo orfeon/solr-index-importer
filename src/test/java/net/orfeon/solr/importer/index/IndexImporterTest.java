@@ -7,6 +7,7 @@ import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.solr.common.SolrException;
@@ -28,6 +29,7 @@ import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -153,6 +155,40 @@ public class IndexImporterTest {
     }
 
     @Test
+    public void recordErrorReportedAs500IsStillSkippedUnderSkipPolicy() throws IOException {
+        // A wrong vector dimension is a fault of the record, but DenseVectorField reports it with a 500.
+        final Schema withVector = SchemaBuilder.record("VectorItem").fields()
+                .requiredString("id")
+                .requiredString("name")
+                .name("vector").type().array().items().floatType().noDefault()
+                .endRecord();
+        final String file = avro(withVector,
+                vectorItem(withVector, "a", 1f, 0f),
+                vectorItem(withVector, "b", 1f, 0f, 0f),
+                vectorItem(withVector, "c", 0f, 1f));
+        final IndexImporter importer = importer(new ModifiableSolrParams(), IndexImporter.InvalidRecordPolicy.SKIP, 1, true);
+
+        assertEquals(2, importer.importFiles(List.of(file)));
+        importer.commit(false, true);
+
+        assertEquals(1, importer.getSkipped());
+        assertEquals(2, numDocs());
+    }
+
+    @Test
+    public void indexFailureIsDecidedByTheCauseNotTheErrorCode() {
+        final SolrException.ErrorCode serverError = SolrException.ErrorCode.SERVER_ERROR;
+        assertTrue(IndexImporter.isIndexFailure(
+                new SolrException(serverError, "closed", new AlreadyClosedException("this IndexWriter is closed"))));
+        assertTrue(IndexImporter.isIndexFailure(new SolrException(serverError, new IOException("disk full"))));
+        assertTrue(IndexImporter.isIndexFailure(new UncheckedIOException(new IOException("disk full"))));
+        assertFalse(IndexImporter.isIndexFailure(new SolrException(serverError, "incorrect vector dimension")));
+        assertFalse(IndexImporter.isIndexFailure(
+                new SolrException(SolrException.ErrorCode.BAD_REQUEST, "missing required field: name")));
+        assertFalse(IndexImporter.isIndexFailure(new IllegalArgumentException("immense term")));
+    }
+
+    @Test
     public void parallelImportOfSeveralFiles() throws IOException {
         final List<String> files = new ArrayList<>();
         for (int f = 0; f < 3; f++) {
@@ -239,10 +275,22 @@ public class IndexImporterTest {
         return record;
     }
 
+    private static GenericRecord vectorItem(final Schema schema, final String id, final Float... vector) {
+        final GenericRecord record = new GenericData.Record(schema);
+        record.put("id", id);
+        record.put("name", "vector " + id);
+        record.put("vector", List.of(vector));
+        return record;
+    }
+
     private static String avro(final GenericRecord... records) throws IOException {
+        return avro(ITEM, records);
+    }
+
+    private static String avro(final Schema schema, final GenericRecord... records) throws IOException {
         final File file = TEMP.newFile("items-" + System.nanoTime() + ".avro");
-        try (DataFileWriter<GenericRecord> writer = new DataFileWriter<>(new GenericDatumWriter<>(ITEM))) {
-            writer.create(ITEM, file);
+        try (DataFileWriter<GenericRecord> writer = new DataFileWriter<>(new GenericDatumWriter<>(schema))) {
+            writer.create(schema, file);
             for (final GenericRecord record : records) {
                 writer.append(record);
             }
